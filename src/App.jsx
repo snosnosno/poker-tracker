@@ -147,13 +147,10 @@ function rotatePositions(seats) {
   });
 }
 
-// 활성 시트 N명에 맞는 포지션 할당 (BTN, SB, BB는 항상 포함)
+// 활성 시트 N명에 맞는 포지션 할당
 function assignPositions(activeCount) {
-  // 9명 표준 순서에서 필요한 만큼 선택
-  // 항상 포함: BTN, SB, BB
-  // N명일 때 사용할 포지션 (액션 순서)
   const presets = {
-    2: ["BTN/SB", "BB"], // 헤즈업
+    2: ["SB", "BB"], // 헤즈업 (SB가 BTN 역할 겸함)
     3: ["BTN", "SB", "BB"],
     4: ["CO", "BTN", "SB", "BB"],
     5: ["HJ", "CO", "BTN", "SB", "BB"],
@@ -201,8 +198,29 @@ function ActionBadge({ actionId, size = "sm" }) {
 function CardChip({ card, size = "sm" }) {
   if (!card) return null;
   const suit = SUITS.find(s => s.id === card[1]);
+  const isNoSuit = !suit; // 'x' 같은 placeholder
   const w = size === "sm" ? 22 : 32;
   const h = size === "sm" ? 30 : 44;
+
+  // 슈트 없을 때: 랭크만 가운데에 크게
+  if (isNoSuit) {
+    return (
+      <div style={{
+        width: w, height: h,
+        background: "#fafafa",
+        border: "1px solid #94a3b8",
+        borderRadius: size === "sm" ? 3 : 5,
+        display: "inline-flex",
+        alignItems: "center", justifyContent: "center",
+        color: "#0f172a",
+        fontFamily: "'Georgia', serif",
+        fontWeight: 900,
+        fontSize: size === "sm" ? 15 : 22,
+        lineHeight: 1,
+      }}>{card[0]}</div>
+    );
+  }
+
   return (
     <div style={{
       width: w, height: h,
@@ -226,39 +244,55 @@ function CardChip({ card, size = "sm" }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 카드 선택 모달
+// 카드 선택 모달 (랭크만, 슈트 무시)
 // ══════════════════════════════════════════════════════════════════════════════
-function CardPickerModal({ open, onClose, onSelectBoth, usedCards = [], initialCards = [null, null] }) {
+function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, null] }) {
   const [picks, setPicks] = useState([null, null]);
+  const [activeSlot, setActiveSlot] = useState(0); // 0 또는 1
 
-  // open될 때 초기값 세팅
   useEffect(() => {
-    if (open) setPicks([initialCards[0] || null, initialCards[1] || null]);
+    if (open) {
+      setPicks([initialCards[0] || null, initialCards[1] || null]);
+      // 첫 빈 슬롯 선택
+      setActiveSlot(initialCards[0] ? 1 : 0);
+    }
   }, [open]);
 
   if (!open) return null;
 
-  const togglePick = (card) => {
+  // 카드 선택: 현재 active 슬롯에 넣고 다음 슬롯으로
+  // 랭크는 'A','K' 등 한 글자. 내부 저장은 'Ax', 'Kx' (슈트 placeholder 'x')
+  const pickRank = (rank) => {
+    const card = rank + "x";
     setPicks(prev => {
-      // 이미 선택된 카드면 해제
-      if (prev[0] === card) return [null, prev[1]];
-      if (prev[1] === card) return [prev[0], null];
-      // 빈 슬롯에 추가
-      if (prev[0] === null) return [card, prev[1]];
-      if (prev[1] === null) return [prev[0], card];
-      // 둘 다 차있으면 두번째를 교체
-      return [prev[0], card];
+      const next = [...prev];
+      next[activeSlot] = card;
+      return next;
     });
+    // 다음 빈 슬롯으로
+    setActiveSlot(s => (s === 0 ? 1 : 0));
   };
 
   const confirm = () => {
     onSelectBoth(picks);
     setPicks([null, null]);
+    setActiveSlot(0);
   };
 
-  const clearAll = () => setPicks([null, null]);
+  const clearAll = () => {
+    setPicks([null, null]);
+    setActiveSlot(0);
+  };
 
-  const isPicked = (card) => picks[0] === card || picks[1] === card;
+  const clearSlot = (slot) => {
+    setPicks(prev => {
+      const next = [...prev];
+      next[slot] = null;
+      return next;
+    });
+    setActiveSlot(slot);
+  };
+
   const canConfirm = picks[0] !== null && picks[1] !== null;
 
   return (
@@ -272,114 +306,100 @@ function CardPickerModal({ open, onClose, onSelectBoth, usedCards = [], initialC
       <div onClick={e => e.stopPropagation()} style={{
         background: "#050d1a",
         border: "1px solid #0f1f35",
-        borderRadius: 14, padding: 16,
-        maxWidth: 380, width: "100%",
-        maxHeight: "90vh", overflow: "auto",
+        borderRadius: 14, padding: 18,
+        maxWidth: 420, width: "100%",
       }}>
-        {/* 상단: 선택된 카드 미리보기 */}
         <div style={{
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          marginBottom: 14,
+          color: "#10b981", fontSize: 11, letterSpacing: 2, marginBottom: 14,
+          textAlign: "center",
+        }}>홀카드 선택 (랭크만)</div>
+
+        {/* 선택된 카드 미리보기 (2장, 큼직하게) */}
+        <div style={{
+          display: "flex", justifyContent: "center", gap: 12,
+          marginBottom: 18,
         }}>
-          <div style={{ color: "#10b981", fontSize: 11, letterSpacing: 2 }}>
-            홀카드 선택 (2장)
-          </div>
-          <div style={{ display: "flex", gap: 6 }}>
-            {[0, 1].map(i => (
-              <div key={i} style={{
-                width: 36, height: 48,
-                background: picks[i] ? "#fafafa" : "transparent",
-                border: `2px dashed ${picks[i] ? "transparent" : "#1a2d45"}`,
-                borderRadius: 5,
-                display: "flex", flexDirection: "column",
-                alignItems: "center", justifyContent: "center",
-                color: !picks[i] ? "#1a2d45"
-                  : picks[i][1] === "h" ? "#dc2626"
-                  : picks[i][1] === "d" ? "#2563eb"
-                  : picks[i][1] === "c" ? "#16a34a" : "#0f172a",
-                fontFamily: "'Georgia',serif",
-                fontWeight: 900,
-                lineHeight: 1,
-                gap: 1,
-              }}>
-                {picks[i] ? (
-                  <>
-                    <span style={{ fontSize: 15 }}>{picks[i][0]}</span>
-                    <span style={{ fontSize: 14 }}>
-                      {SUITS.find(s => s.id === picks[i][1])?.label}
-                    </span>
-                  </>
-                ) : (
-                  <span style={{ fontSize: 18 }}>?</span>
+          {[0, 1].map(i => {
+            const isActive = activeSlot === i;
+            return (
+              <button
+                key={i}
+                onClick={() => picks[i] ? clearSlot(i) : setActiveSlot(i)}
+                style={{
+                  width: 70, height: 96,
+                  background: picks[i] ? "#fafafa" : "transparent",
+                  border: `2.5px ${picks[i] ? "solid transparent" : "dashed"} ${
+                    isActive ? "#fbbf24" : "#1a2d45"
+                  }`,
+                  borderRadius: 8,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  color: "#0f172a",
+                  fontFamily: "'Georgia', serif",
+                  fontWeight: 900,
+                  fontSize: 42,
+                  cursor: "pointer",
+                  boxShadow: isActive && !picks[i] ? "0 0 12px rgba(251,191,36,.4)" : "none",
+                  animation: isActive && !picks[i] ? "cardPulse 1.2s infinite" : "none",
+                }}
+              >
+                {picks[i] ? picks[i][0] : (
+                  <span style={{ color: "#1a2d45", fontSize: 28 }}>?</span>
                 )}
-              </div>
-            ))}
-          </div>
+              </button>
+            );
+          })}
         </div>
 
-        {/* 카드 그리드 */}
-        {SUITS.map(suit => (
-          <div key={suit.id} style={{ marginBottom: 10 }}>
-            <div style={{
-              fontSize: 18, color: suit.color, marginBottom: 4,
-            }}>{suit.label}</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-              {RANKS.map(rank => {
-                const card = rank + suit.id;
-                const used = usedCards.includes(card) && !isPicked(card);
-                const picked = isPicked(card);
-                return (
-                  <button
-                    key={card}
-                    onClick={() => !used && togglePick(card)}
-                    disabled={used}
-                    style={{
-                      width: 28, height: 36,
-                      background: picked
-                        ? "#10b981"
-                        : used ? "#0a1628" : "#fafafa",
-                      border: `2px solid ${
-                        picked ? "#fbbf24" : used ? "#1a2d45" : "transparent"
-                      }`,
-                      borderRadius: 4,
-                      color: picked ? "#000"
-                        : used ? "#1a2d45"
-                        : suit.color === "#f87171" ? "#dc2626"
-                        : suit.color === "#fbbf24" ? "#2563eb"
-                        : suit.color === "#86efac" ? "#16a34a" : "#0f172a",
-                      fontWeight: 900, fontSize: 12,
-                      fontFamily: "'Georgia', serif",
-                      cursor: used ? "not-allowed" : "pointer",
-                      opacity: used ? .3 : 1,
-                      transform: picked ? "scale(1.1)" : "scale(1)",
-                      transition: "all .1s",
-                    }}
-                  >{rank}</button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
+        {/* 랭크 그리드 - 큰 버튼 13개 */}
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(7, 1fr)",
+          gap: 6,
+          marginBottom: 16,
+        }}>
+          {RANKS.map(rank => {
+            const isInPicks = picks.some(p => p && p[0] === rank);
+            return (
+              <button
+                key={rank}
+                onClick={() => pickRank(rank)}
+                style={{
+                  aspectRatio: "1 / 1.3",
+                  background: isInPicks ? "#10b981" : "#fafafa",
+                  border: `2px solid ${isInPicks ? "#fbbf24" : "transparent"}`,
+                  borderRadius: 8,
+                  color: isInPicks ? "#000" : "#0f172a",
+                  fontWeight: 900,
+                  fontSize: 24,
+                  fontFamily: "'Georgia', serif",
+                  cursor: "pointer",
+                  transition: "all .1s",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}
+              >{rank}</button>
+            );
+          })}
+        </div>
 
         {/* 하단 버튼 */}
-        <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+        <div style={{ display: "flex", gap: 6 }}>
           <button onClick={confirm} disabled={!canConfirm} style={{
-            flex: 1, padding: "10px",
+            flex: 1, padding: "12px",
             background: canConfirm ? "#10b981" : "#0a1628",
             border: "none", borderRadius: 8,
             color: canConfirm ? "#000" : "#1a2d45",
-            fontSize: 12, fontWeight: 900,
+            fontSize: 13, fontWeight: 900,
             cursor: canConfirm ? "pointer" : "not-allowed",
-            letterSpacing: 1,
+            letterSpacing: 1.5,
           }}>✓ 확인</button>
           <button onClick={clearAll} style={{
-            padding: "10px 14px",
+            padding: "12px 16px",
             background: "#0a1628", border: "1px solid #1a2d45",
             borderRadius: 8, color: "#475569",
             fontSize: 11, cursor: "pointer",
           }}>비우기</button>
           <button onClick={onClose} style={{
-            padding: "10px 14px",
+            padding: "12px 16px",
             background: "transparent", border: "1px solid #1a2d45",
             borderRadius: 8, color: "#475569",
             fontSize: 11, cursor: "pointer",
@@ -596,6 +616,216 @@ function HandHistoryCard({ hand }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// 핸드 종료 리캡 모달
+// ══════════════════════════════════════════════════════════════════════════════
+function RecapModal({ hand, onClose }) {
+  const [copied, setCopied] = useState(false);
+
+  // 모달 닫을 때 copied 상태 리셋
+  useEffect(() => {
+    if (!hand) setCopied(false);
+  }, [hand]);
+
+  if (!hand) return null;
+
+  const handleCopy = () => {
+    const text = handToText(hand);
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      });
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch {}
+      document.body.removeChild(ta);
+    }
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0,
+        background: "rgba(0,0,0,.85)",
+        zIndex: 200,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 16,
+        animation: "recapFadeIn .2s ease-out",
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: "#050d1a",
+          border: "1px solid #f59e0b55",
+          borderRadius: 16, padding: 18,
+          maxWidth: 440, width: "100%",
+          maxHeight: "85vh", overflow: "auto",
+          boxShadow: "0 0 40px rgba(245,158,11,.2)",
+          fontFamily: "'Courier New', monospace",
+          color: "#e2e8f0",
+        }}
+      >
+        {/* 헤더 */}
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          marginBottom: 14,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{
+              color: "#10b981", fontSize: 14, fontWeight: 900,
+              letterSpacing: 2,
+            }}>HAND #{hand.number}</span>
+            <span style={{
+              background: "#f59e0b22", color: "#f59e0b",
+              border: "1px solid #f59e0b55",
+              fontSize: 11, fontWeight: 700,
+              padding: "2px 10px", borderRadius: 4, letterSpacing: 1,
+            }}>🏆 {hand.winnerName}</span>
+          </div>
+          <button onClick={onClose} style={{
+            background: "transparent", border: "none",
+            color: "#475569", fontSize: 18, cursor: "pointer", padding: 0,
+            width: 28, height: 28,
+          }}>✕</button>
+        </div>
+
+        {/* 히스토리 */}
+        <div style={{
+          background: "#020912",
+          border: "1px solid #0f1f35",
+          borderRadius: 10, padding: 14,
+          marginBottom: 12,
+        }}>
+          {STREETS.map(street => {
+            const rawEntries = hand.streets[street] || [];
+            const isPreflop = street === "PREFLOP";
+
+            let entries;
+            let hiddenFirstFolds = 0;
+            if (isPreflop) {
+              const actedSeats = new Set();
+              entries = [];
+              rawEntries.forEach(e => {
+                if (e.action === "fold" && !actedSeats.has(e.seatId)) {
+                  hiddenFirstFolds++;
+                } else {
+                  actedSeats.add(e.seatId);
+                  entries.push(e);
+                }
+              });
+            } else {
+              entries = rawEntries;
+            }
+            const showAllFold = isPreflop && entries.length === 0 && hiddenFirstFolds > 0;
+
+            return (
+              <div key={street} style={{ marginBottom: 8, lineHeight: 1.8 }}>
+                <span style={{
+                  color: "#475569", fontSize: 11, fontWeight: 700, letterSpacing: 2,
+                }}>
+                  {STREET_SHORT[street]}:{" "}
+                </span>
+                {(() => {
+                  const seenSeats = new Set();
+                  return entries.map((e, i) => {
+                    const cardsText = cardsToText(hand.holeCards?.[e.seatId]);
+                    const isFirstForPlayer = !seenSeats.has(e.seatId);
+                    seenSeats.add(e.seatId);
+                    const label = getActionLabel(entries, i);
+                    const isNBet = label && label.endsWith("-BET");
+                    return (
+                      <span key={i} style={{ marginRight: 6, whiteSpace: "nowrap" }}>
+                        {isPreflop && isFirstForPlayer && (
+                          <>
+                            <span style={{ color: "#10b981", fontSize: 11, fontWeight: 700 }}>{e.position}</span>{" "}
+                            <span style={{ color: "#e2e8f0", fontSize: 12, fontWeight: 700 }}>{e.playerName}</span>{" "}
+                          </>
+                        )}
+                        {cardsText ? (
+                          <span style={{ color: "#fbbf24", fontSize: 12, fontWeight: 900, fontFamily: "'Georgia',serif" }}>
+                            {cardsText}
+                          </span>
+                        ) : (
+                          <span style={{ color: "#94a3b8", fontSize: 11 }}>{e.playerName}</span>
+                        )}
+                        {" "}
+                        {isNBet ? (
+                          <span style={{
+                            background: "#ef4444" + "22",
+                            color: "#ef4444",
+                            border: "1px solid #ef444455",
+                            fontSize: 9, fontWeight: 900,
+                            padding: "1px 6px", borderRadius: 4,
+                            letterSpacing: 1,
+                          }}>{label}</span>
+                        ) : (
+                          <ActionBadge actionId={e.action} size="sm" />
+                        )}
+                        {i < entries.length - 1 && (
+                          <span style={{ color: "#1e3a5f", margin: "0 4px" }}>/</span>
+                        )}
+                      </span>
+                    );
+                  });
+                })()}
+                {showAllFold && (
+                  <span style={{
+                    background: "#475569" + "22",
+                    color: "#94a3b8",
+                    border: "1px solid #47556955",
+                    fontSize: 9, fontWeight: 900,
+                    padding: "1px 6px", borderRadius: 4,
+                    letterSpacing: 1,
+                  }}>ALL-FOLD</span>
+                )}
+              </div>
+            );
+          })}
+          <div style={{
+            borderTop: "1px dashed #1e3a5f",
+            marginTop: 10, paddingTop: 8,
+            color: "#475569", fontSize: 10, letterSpacing: 2,
+          }}>{"=".repeat(28)}</div>
+          <div style={{ marginTop: 6 }}>
+            <span style={{ color: "#475569", fontSize: 11, letterSpacing: 2 }}>Winner: </span>
+            <span style={{ color: "#f59e0b", fontSize: 14, fontWeight: 900 }}>
+              {hand.winnerName}
+            </span>
+          </div>
+        </div>
+
+        {/* 하단 버튼 */}
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={handleCopy} style={{
+            flex: 1, padding: "12px",
+            background: copied ? "#10b981" : "#0a1628",
+            border: `1.5px solid ${copied ? "#10b981" : "#1a2d45"}`,
+            borderRadius: 10,
+            color: copied ? "#000" : "#94a3b8",
+            fontSize: 12, fontWeight: 900,
+            letterSpacing: 1.5, cursor: "pointer",
+            fontFamily: "'Courier New',monospace",
+            transition: "all .15s",
+          }}>{copied ? "✓ 복사됨!" : "📋 복사"}</button>
+          <button onClick={onClose} style={{
+            flex: 1, padding: "12px",
+            background: "linear-gradient(135deg, #10b981, #059669)",
+            border: "none", borderRadius: 10,
+            color: "#000", fontSize: 12, fontWeight: 900,
+            letterSpacing: 1.5, cursor: "pointer",
+          }}>NEXT HAND →</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // 메인 앱
 // ══════════════════════════════════════════════════════════════════════════════
 export default function App() {
@@ -609,6 +839,7 @@ export default function App() {
   const [activeView, setActiveView] = useState("table");
   const [showWinnerPicker, setShowWinnerPicker] = useState(false);
   const [cardPickerFor, setCardPickerFor] = useState(null); // { seatId }
+  const [recapHand, setRecapHand] = useState(null); // 방금 끝난 핸드를 모달로 보여줌
 
   const activeSeats = seats.filter(s => s.active && s.name);
 
@@ -686,6 +917,7 @@ export default function App() {
             setCurrentHand(null);
             setCurrentStreet(0);
             setShowWinnerPicker(false);
+            setRecapHand(finalHand);
           }, 400);
         }
       }
@@ -758,6 +990,17 @@ export default function App() {
   // 액션 순서로 정렬
   const sortedActionable = () => {
     const players = getActionablePlayers();
+    if (!currentHand) return players;
+
+    // 헤즈업 특수 처리: 프리플랍은 SB→BB, 포스트플랍은 BB→SB
+    const isHeadsUp = currentHand.seats.length === 2;
+    if (isHeadsUp) {
+      const sb = players.find(p => p.position === "SB");
+      const bb = players.find(p => p.position === "BB");
+      if (!sb || !bb) return players;
+      return currentStreet === 0 ? [sb, bb] : [bb, sb];
+    }
+
     const order = currentStreet === 0 ? POSITION_ORDER : POSTFLOP_ORDER;
     return [...players].sort((a, b) => {
       const ai = order.indexOf(a.position);
@@ -776,7 +1019,7 @@ export default function App() {
     const streetActions = currentHand.streets[street];
     const actionable = sortedActionable();
 
-    // 마지막 베팅성 액션 (OPEN/BET/RAISE/ALL-IN) 위치 찾기
+    // 마지막 베팅성 액션 위치
     let lastAggressorIdx = -1;
     let lastAggressorSeatId = null;
     for (let i = streetActions.length - 1; i >= 0; i--) {
@@ -788,7 +1031,7 @@ export default function App() {
       }
     }
 
-    // 이 라운드(마지막 베팅 이후)에서 이미 액션한 사람들
+    // 마지막 베팅 이후 이미 응답한 사람들
     const respondedSeatIds = new Set();
     if (lastAggressorIdx >= 0) {
       respondedSeatIds.add(lastAggressorSeatId);
@@ -797,6 +1040,16 @@ export default function App() {
       }
     } else {
       streetActions.forEach(a => respondedSeatIds.add(a.seatId));
+    }
+
+    // 헤즈업: 상대방 한 명만 체크하면 됨
+    const isHeadsUp = currentHand.seats.length === 2;
+    if (isHeadsUp) {
+      // 액션 순서대로 아직 응답 안 한 첫 사람
+      for (const p of actionable) {
+        if (!respondedSeatIds.has(p.id)) return p;
+      }
+      return null;
     }
 
     if (lastAggressorIdx >= 0) {
@@ -826,6 +1079,15 @@ export default function App() {
 
   // ── 스트리트 진행 ─────────────────────────────────────────────────────────
   const nextStreet = () => {
+    // 액션 가능한 사람이 1명 이하면 (모두 올인 or 1명만 살아남음)
+    // → 남은 스트리트 건너뛰고 위너 선택
+    const actionable = getActionablePlayers();
+    if (actionable.length <= 1) {
+      // 리버까지 모든 빈 스트리트 통과
+      setCurrentStreet(3);
+      setShowWinnerPicker(true);
+      return;
+    }
     if (currentStreet < 3) {
       setCurrentStreet(s => s + 1);
     } else {
@@ -847,6 +1109,7 @@ export default function App() {
     setCurrentHand(null);
     setCurrentStreet(0);
     setShowWinnerPicker(false);
+    setRecapHand(finalHand); // 모달 띄우기
   };
 
   const discardHand = () => {
@@ -1531,30 +1794,39 @@ export default function App() {
               </div>
 
               {/* 다음 버튼 */}
-              <button
-                onClick={nextStreet}
-                disabled={!isRoundComplete()}
-                style={{
-                  width: "100%", marginTop: 14, padding: "13px",
-                  background: !isRoundComplete() ? "#070f1c"
-                    : currentStreet < 3
-                      ? "linear-gradient(135deg, #1a3a8f, #0f2060)"
-                      : "linear-gradient(135deg, #f59e0b, #b45309)",
-                  border: !isRoundComplete() ? "1px solid #1a2d45" : "none",
-                  borderRadius: 10,
-                  color: !isRoundComplete() ? "#1a2d45" : "#fff",
-                  fontSize: 13, fontWeight: 900,
-                  cursor: !isRoundComplete() ? "not-allowed" : "pointer",
-                  letterSpacing: 2,
-                  boxShadow: currentStreet === 3 && isRoundComplete()
-                    ? "0 0 20px rgba(245,158,11,.4)" : "none",
-                  opacity: !isRoundComplete() ? .5 : 1,
-                }}
-              >
-                {currentStreet < 3
-                  ? `→ ${STREET_SHORT[STREETS[currentStreet + 1]]} 로 이동`
-                  : "🏆 WINNER 선택"}
-              </button>
+              {(() => {
+                const actionableCount = getActionablePlayers().length;
+                const goToShowdown = actionableCount <= 1;
+                const isGold = currentStreet === 3 || goToShowdown;
+                return (
+                  <button
+                    onClick={nextStreet}
+                    disabled={!isRoundComplete()}
+                    style={{
+                      width: "100%", marginTop: 14, padding: "13px",
+                      background: !isRoundComplete() ? "#070f1c"
+                        : isGold
+                          ? "linear-gradient(135deg, #f59e0b, #b45309)"
+                          : "linear-gradient(135deg, #1a3a8f, #0f2060)",
+                      border: !isRoundComplete() ? "1px solid #1a2d45" : "none",
+                      borderRadius: 10,
+                      color: !isRoundComplete() ? "#1a2d45" : "#fff",
+                      fontSize: 13, fontWeight: 900,
+                      cursor: !isRoundComplete() ? "not-allowed" : "pointer",
+                      letterSpacing: 2,
+                      boxShadow: isGold && isRoundComplete()
+                        ? "0 0 20px rgba(245,158,11,.4)" : "none",
+                      opacity: !isRoundComplete() ? .5 : 1,
+                    }}
+                  >
+                    {goToShowdown
+                      ? "🏆 SHOWDOWN → WINNER 선택"
+                      : currentStreet < 3
+                        ? `→ ${STREET_SHORT[STREETS[currentStreet + 1]]} 로 이동`
+                        : "🏆 WINNER 선택"}
+                  </button>
+                );
+              })()}
             </div>
           )}
 
@@ -1638,17 +1910,23 @@ export default function App() {
         open={!!cardPickerFor}
         onClose={() => setCardPickerFor(null)}
         onSelectBoth={cards => setHoleCards(cardPickerFor.seatId, cards)}
-        usedCards={usedCards.filter(c =>
-          // 본인이 들고 있는 카드는 다른 카드 선택에 영향 안 주게
-          !(currentHand?.holeCards[cardPickerFor?.seatId] || []).includes(c)
-        )}
         initialCards={currentHand?.holeCards[cardPickerFor?.seatId] || [null, null]}
+      />
+
+      {/* 핸드 종료 리캡 모달 */}
+      <RecapModal
+        hand={recapHand}
+        onClose={() => setRecapHand(null)}
       />
 
       <style>{`
         @keyframes cardPulse {
           0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, .7); }
           50% { box-shadow: 0 0 0 6px rgba(251, 191, 36, 0); }
+        }
+        @keyframes recapFadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
         }
       `}</style>
     </div>
