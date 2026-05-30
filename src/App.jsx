@@ -1138,11 +1138,6 @@ export default function App() {
   const currentStreetName = STREETS[currentStreet];
   const isHandActive = !!currentHand;
 
-  // 사용된 카드 목록 (전체)
-  const usedCards = currentHand
-    ? Object.values(currentHand.holeCards).flat().filter(Boolean)
-    : [];
-
   // ════════════════════════════════════════════════════════════════════════
   // RENDER
   // ════════════════════════════════════════════════════════════════════════
@@ -1732,7 +1727,8 @@ export default function App() {
                           if (someoneOpened || someoneBet) disabled = true;
                         }
                         if (action.id === "call") {
-                          if (!someoneOpened && !someoneBet) disabled = true;
+                          // 프리플랍이 아닌데 베팅 없으면 콜 불가
+                          if (currentStreet > 0 && !someoneBet) disabled = true;
                           // 본인이 마지막 베팅자면 콜 불가
                           if (lastAggressive?.seatId === nextPlayer.id) disabled = true;
                         }
