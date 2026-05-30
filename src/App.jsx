@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 상수
@@ -17,16 +17,21 @@ const ACTIONS = [
 ];
 
 // 9-max 포지션 순서 (액션 순서: UTG부터 시계방향)
-// PREFLOP: UTG → UTG+1 → MP → MP+1 → HJ → CO → BTN → SB → BB
-// POSTFLOP: SB → BB → UTG → ... → BTN (SB부터 시작)
-const POSITION_ORDER = ["UTG", "UTG+1", "MP", "MP+1", "HJ", "CO", "BTN", "SB", "BB"];
+// PREFLOP: UTG → UTG+1 → MP → MP+1 → HJ → CO → D → SB → BB
+// POSTFLOP: SB → BB → UTG → ... → D (SB부터 시작)
+const POSITION_ORDER = ["UTG", "UTG+1", "MP", "MP+1", "HJ", "CO", "D", "SB", "BB"];
 
-// 프리플랍 액션 순서 = POSITION_ORDER 그대로 (UTG가 첫번째)
-// 포스트플랍 액션 순서 = SB → BB → UTG → ... → BTN
-const POSTFLOP_ORDER = ["SB", "BB", "UTG", "UTG+1", "MP", "MP+1", "HJ", "CO", "BTN"];
+// 포스트플랍 액션 순서 = SB → BB → UTG → ... → D
+const POSTFLOP_ORDER = ["SB", "BB", "UTG", "UTG+1", "MP", "MP+1", "HJ", "CO", "D"];
 
 // 카드
 const RANKS = ["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"];
+
+// 카드 선택 그리드 표시 순서 (2줄: A234567 / 89TJQK)
+const RANK_GRID = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K"];
+// 각 그리드 위치의 단축키 (A=a, 2~9=숫자, T/J/Q/K=알파벳)
+const RANK_KEYS = ["a", "2", "3", "4", "5", "6", "7", "8", "9", "t", "j", "q", "k"];
+
 const SUITS = [
   { id: "s", label: "♠", color: "#e2e8f0" },
   { id: "h", label: "♥", color: "#f87171" },
@@ -67,34 +72,50 @@ function getActionLabel(entries, index) {
 }
 
 // 핸드를 텍스트로 직렬화 (복사용) - 핸드 넘버는 포함 안 함
+// 프리플랍 엔트리에서 첫 액션 폴드 숨김 처리 (헤즈업은 숨기지 않음)
+// 반환: { entries, showAllFold }
+function processPreflopEntries(rawEntries, isHeadsUp) {
+  if (isHeadsUp) {
+    // 헤즈업: 폴드도 다 표시
+    return { entries: rawEntries, showAllFold: false };
+  }
+  const actedSeats = new Set();
+  const entries = [];
+  let hiddenFirstFolds = 0;
+  rawEntries.forEach(e => {
+    if (e.action === "fold" && !actedSeats.has(e.seatId)) {
+      hiddenFirstFolds++;
+    } else {
+      actedSeats.add(e.seatId);
+      entries.push(e);
+    }
+  });
+  const showAllFold = entries.length === 0 && hiddenFirstFolds > 0;
+  return { entries, showAllFold };
+}
+
+// 구글 시트에서 한 셀에 들어가도록 큰따옴표로 감싸기 (내부 줄바꿈 보존)
+// 내부 " 는 "" 로 이스케이프
+function toSheetCell(text) {
+  return '"' + String(text).replace(/"/g, '""') + '"';
+}
+
 function handToText(hand) {
   const lines = [];
+  const isHeadsUp = (hand.seats?.length || 0) === 2;
 
   STREETS.forEach(street => {
     const rawEntries = hand.streets[street] || [];
     const isPreflop = street === "PREFLOP";
 
-    // 첫 액션이 폴드인 사람은 숨김 (그 사람의 이후 액션도 없으므로 자동)
-    // 단, 이미 다른 액션 후 폴드한 사람은 표시
-    let entries;
-    let hiddenFirstFolds = 0;
+    let entries, showAllFold = false;
     if (isPreflop) {
-      const actedSeats = new Set();
-      entries = [];
-      rawEntries.forEach(e => {
-        if (e.action === "fold" && !actedSeats.has(e.seatId)) {
-          hiddenFirstFolds++; // 첫 액션 폴드 → 숨김
-        } else {
-          actedSeats.add(e.seatId);
-          entries.push(e);
-        }
-      });
+      const r = processPreflopEntries(rawEntries, isHeadsUp);
+      entries = r.entries;
+      showAllFold = r.showAllFold;
     } else {
       entries = rawEntries;
     }
-
-    // 프리플랍에서 표시되는 액션이 0개이고 숨겨진 폴드만 있으면 ALL-FOLD
-    const showAllFold = isPreflop && entries.length === 0 && hiddenFirstFolds > 0;
 
     const parts = [];
     const seenSeats = new Set();
@@ -150,16 +171,109 @@ function rotatePositions(seats) {
 // 활성 시트 N명에 맞는 포지션 할당
 function assignPositions(activeCount) {
   const presets = {
-    2: ["SB", "BB"], // 헤즈업 (SB가 BTN 역할 겸함)
-    3: ["BTN", "SB", "BB"],
-    4: ["CO", "BTN", "SB", "BB"],
-    5: ["HJ", "CO", "BTN", "SB", "BB"],
-    6: ["UTG", "HJ", "CO", "BTN", "SB", "BB"],
-    7: ["UTG", "MP", "HJ", "CO", "BTN", "SB", "BB"],
-    8: ["UTG", "UTG+1", "MP", "HJ", "CO", "BTN", "SB", "BB"],
-    9: ["UTG", "UTG+1", "MP", "MP+1", "HJ", "CO", "BTN", "SB", "BB"],
+    2: ["D", "BB"], // 헤즈업 (D=딜러, SB 겸 버튼)
+    3: ["D", "SB", "BB"],
+    4: ["CO", "D", "SB", "BB"],
+    5: ["HJ", "CO", "D", "SB", "BB"],
+    6: ["UTG", "HJ", "CO", "D", "SB", "BB"],
+    7: ["UTG", "MP", "HJ", "CO", "D", "SB", "BB"],
+    8: ["UTG", "UTG+1", "MP", "HJ", "CO", "D", "SB", "BB"],
+    9: ["UTG", "UTG+1", "MP", "MP+1", "HJ", "CO", "D", "SB", "BB"],
   };
   return presets[activeCount] || presets[9];
+}
+
+// ── 액션 계산 순수 헬퍼 (hand 객체 + 스트리트 인덱스 기반) ──────────────────
+// 컴포넌트 메서드와 logAction 내부 자동판정에서 공용으로 사용.
+// 현재 스트리트에서 폴드/올인하지 않은(=액션 가능한) 플레이어
+function computeActionablePlayers(hand, streetIdx) {
+  if (!hand) return [];
+  const foldedIds = new Set();
+  const allInIds = new Set();
+  for (let i = 0; i < streetIdx; i++) {
+    hand.streets[STREETS[i]].forEach(a => {
+      if (a.action === "fold") foldedIds.add(a.seatId);
+      if (a.action === "allin") allInIds.add(a.seatId);
+    });
+  }
+  hand.streets[STREETS[streetIdx]].forEach(a => {
+    if (a.action === "fold") foldedIds.add(a.seatId);
+    if (a.action === "allin") allInIds.add(a.seatId);
+  });
+  return hand.seats.filter(s => !foldedIds.has(s.id) && !allInIds.has(s.id));
+}
+
+// 액션 순서로 정렬된 actionable
+function computeSortedActionable(hand, streetIdx) {
+  const players = computeActionablePlayers(hand, streetIdx);
+  if (!hand) return players;
+  const isHeadsUp = hand.seats.length === 2;
+  if (isHeadsUp) {
+    const d = players.find(p => p.position === "D");
+    const bb = players.find(p => p.position === "BB");
+    if (!d || !bb) return players;
+    return streetIdx === 0 ? [d, bb] : [bb, d];
+  }
+  const order = streetIdx === 0 ? POSITION_ORDER : POSTFLOP_ORDER;
+  return [...players].sort((a, b) => {
+    const ai = order.indexOf(a.position);
+    const bi = order.indexOf(b.position);
+    const aIdx = ai === -1 ? order.indexOf("D") : ai;
+    const bIdx = bi === -1 ? order.indexOf("D") : bi;
+    return aIdx - bIdx;
+  });
+}
+
+// 다음 액션할 플레이어 (없으면 null = 라운드 완료)
+function computeNextToAct(hand, streetIdx) {
+  if (!hand) return null;
+  const streetActions = hand.streets[STREETS[streetIdx]];
+  const actionable = computeSortedActionable(hand, streetIdx);
+
+  let lastAggressorIdx = -1;
+  let lastAggressorSeatId = null;
+  for (let i = streetActions.length - 1; i >= 0; i--) {
+    const a = streetActions[i];
+    if (a.action === "open" || a.action === "bet" || a.action === "raise" || a.action === "allin") {
+      lastAggressorIdx = i;
+      lastAggressorSeatId = a.seatId;
+      break;
+    }
+  }
+
+  const respondedSeatIds = new Set();
+  if (lastAggressorIdx >= 0) {
+    respondedSeatIds.add(lastAggressorSeatId);
+    for (let i = lastAggressorIdx + 1; i < streetActions.length; i++) {
+      respondedSeatIds.add(streetActions[i].seatId);
+    }
+  } else {
+    streetActions.forEach(a => respondedSeatIds.add(a.seatId));
+  }
+
+  const isHeadsUp = hand.seats.length === 2;
+  if (isHeadsUp) {
+    for (const p of actionable) {
+      if (!respondedSeatIds.has(p.id)) return p;
+    }
+    return null;
+  }
+
+  if (lastAggressorIdx >= 0) {
+    const aggressorPos = streetActions[lastAggressorIdx].position;
+    const order = streetIdx === 0 ? POSITION_ORDER : POSTFLOP_ORDER;
+    const aggrOrderIdx = order.indexOf(aggressorPos);
+    for (let offset = 1; offset <= order.length; offset++) {
+      const targetPos = order[(aggrOrderIdx + offset) % order.length];
+      const player = actionable.find(p => p.position === targetPos);
+      if (player && !respondedSeatIds.has(player.id)) return player;
+    }
+  } else {
+    for (const p of actionable) {
+      if (!respondedSeatIds.has(p.id)) return p;
+    }
+  }
+  return null;
 }
 
 // 시트 초기화 (기본 포지션 미리 할당)
@@ -253,10 +367,44 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
   useEffect(() => {
     if (open) {
       setPicks([initialCards[0] || null, initialCards[1] || null]);
-      // 첫 빈 슬롯 선택
       setActiveSlot(initialCards[0] ? 1 : 0);
     }
   }, [open]);
+
+  // 카드 모달 키보드 입력
+  useEffect(() => {
+    if (!open) return;
+    const handleKey = (e) => {
+      const k = e.key.toLowerCase();
+      if (k === "enter") {
+        setPicks(cur => {
+          if (cur[0] !== null && cur[1] !== null) {
+            onSelectBoth(cur);
+            return [null, null];
+          }
+          return cur;
+        });
+        return;
+      }
+      if (k === "escape") { onClose(); return; }
+      // '1' 도 A로 허용
+      const lookupKey = k === "1" ? "a" : k;
+      const gi = RANK_KEYS.indexOf(lookupKey);
+      if (gi >= 0) {
+        const card = RANK_GRID[gi] + "x";
+        setActiveSlot(slot => {
+          setPicks(prev => {
+            const next = [...prev];
+            next[slot] = card;
+            return next;
+          });
+          return slot === 0 ? 1 : 0;
+        });
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [open, onSelectBoth, onClose]);
 
   if (!open) return null;
 
@@ -350,14 +498,14 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
           })}
         </div>
 
-        {/* 랭크 그리드 - 큰 버튼 13개 */}
+        {/* 랭크 그리드 - A234567 / 89TJQK 2줄 */}
         <div style={{
           display: "grid",
           gridTemplateColumns: "repeat(7, 1fr)",
           gap: 6,
           marginBottom: 16,
         }}>
-          {RANKS.map(rank => {
+          {RANK_GRID.map((rank, gi) => {
             const isInPicks = picks.some(p => p && p[0] === rank);
             return (
               <button
@@ -375,8 +523,16 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
                   cursor: "pointer",
                   transition: "all .1s",
                   display: "flex", alignItems: "center", justifyContent: "center",
+                  position: "relative",
                 }}
-              >{rank}</button>
+              >
+                <span style={{
+                  position: "absolute", top: 2, left: 4,
+                  fontSize: 9, color: isInPicks ? "#000" : "#94a3b8",
+                  opacity: .6, fontWeight: 700, fontFamily: "monospace",
+                }}>{RANK_KEYS[gi].toUpperCase()}</span>
+                {rank}
+              </button>
             );
           })}
         </div>
@@ -419,7 +575,7 @@ function HandHistoryCard({ hand }) {
 
   const handleCopy = (e) => {
     e.stopPropagation();
-    const text = handToText(hand);
+    const text = toSheetCell(handToText(hand));
     if (navigator.clipboard) {
       navigator.clipboard.writeText(text).then(() => {
         setCopied(true);
@@ -510,26 +666,16 @@ function HandHistoryCard({ hand }) {
           {STREETS.map(street => {
             const rawEntries = hand.streets[street] || [];
             const isPreflop = street === "PREFLOP";
+            const isHeadsUp = (hand.seats?.length || 0) === 2;
 
-            // 첫 액션이 폴드인 사람 숨김
-            let entries;
-            let hiddenFirstFolds = 0;
+            let entries, showAllFold = false;
             if (isPreflop) {
-              const actedSeats = new Set();
-              entries = [];
-              rawEntries.forEach(e => {
-                if (e.action === "fold" && !actedSeats.has(e.seatId)) {
-                  hiddenFirstFolds++;
-                } else {
-                  actedSeats.add(e.seatId);
-                  entries.push(e);
-                }
-              });
+              const r = processPreflopEntries(rawEntries, isHeadsUp);
+              entries = r.entries;
+              showAllFold = r.showAllFold;
             } else {
               entries = rawEntries;
             }
-
-            const showAllFold = isPreflop && entries.length === 0 && hiddenFirstFolds > 0;
 
             return (
               <div key={street} style={{ marginBottom: 8, lineHeight: 1.8 }}>
@@ -629,7 +775,7 @@ function RecapModal({ hand, onClose }) {
   if (!hand) return null;
 
   const handleCopy = () => {
-    const text = handToText(hand);
+    const text = toSheetCell(handToText(hand));
     if (navigator.clipboard) {
       navigator.clipboard.writeText(text).then(() => {
         setCopied(true);
@@ -704,24 +850,16 @@ function RecapModal({ hand, onClose }) {
           {STREETS.map(street => {
             const rawEntries = hand.streets[street] || [];
             const isPreflop = street === "PREFLOP";
+            const isHeadsUp = (hand.seats?.length || 0) === 2;
 
-            let entries;
-            let hiddenFirstFolds = 0;
+            let entries, showAllFold = false;
             if (isPreflop) {
-              const actedSeats = new Set();
-              entries = [];
-              rawEntries.forEach(e => {
-                if (e.action === "fold" && !actedSeats.has(e.seatId)) {
-                  hiddenFirstFolds++;
-                } else {
-                  actedSeats.add(e.seatId);
-                  entries.push(e);
-                }
-              });
+              const r = processPreflopEntries(rawEntries, isHeadsUp);
+              entries = r.entries;
+              showAllFold = r.showAllFold;
             } else {
               entries = rawEntries;
             }
-            const showAllFold = isPreflop && entries.length === 0 && hiddenFirstFolds > 0;
 
             return (
               <div key={street} style={{ marginBottom: 8, lineHeight: 1.8 }}>
@@ -832,7 +970,7 @@ export default function App() {
   // localStorage에서 초기값 불러오기
   const loadFromStorage = (key, fallback) => {
     try {
-      const raw = localStorage.getItem(key);
+      const raw = window.localStorage.getItem(key);
       return raw ? JSON.parse(raw) : fallback;
     } catch {
       return fallback;
@@ -848,17 +986,18 @@ export default function App() {
   const [editPosition, setEditPosition] = useState("");
   const [activeView, setActiveView] = useState("table");
   const [showWinnerPicker, setShowWinnerPicker] = useState(false);
+  const [selectedWinners, setSelectedWinners] = useState([]); // 다중 위너 선택용 seatId 배열
   const [cardPickerFor, setCardPickerFor] = useState(null); // { seatId }
   const [recapHand, setRecapHand] = useState(null); // 방금 끝난 핸드를 모달로 보여줌
 
   // hands 변경되면 localStorage에 자동 저장
   useEffect(() => {
-    try { localStorage.setItem("pt_hands", JSON.stringify(hands)); } catch {}
+    try { window.localStorage.setItem("pt_hands", JSON.stringify(hands)); } catch {}
   }, [hands]);
 
   // seats 변경되면 localStorage에 자동 저장
   useEffect(() => {
-    try { localStorage.setItem("pt_seats", JSON.stringify(seats)); } catch {}
+    try { window.localStorage.setItem("pt_seats", JSON.stringify(seats)); } catch {}
   }, [seats]);
 
   const activeSeats = seats.filter(s => s.active && s.name);
@@ -931,6 +1070,7 @@ export default function App() {
       };
 
       // 자동 위너 판정: 폴드 액션 후 한 명만 남으면 즉시 종료
+      let autoEnded = false;
       if (actionId === "fold") {
         const foldedIds = new Set();
         for (let i = 0; i <= currentStreet; i++) {
@@ -940,6 +1080,7 @@ export default function App() {
         }
         const alive = updated.seats.filter(s => !foldedIds.has(s.id));
         if (alive.length === 1) {
+          autoEnded = true;
           const winner = alive[0];
           const winnerCards = cardsToText(updated.holeCards[winner.id]);
           const finalHand = {
@@ -957,6 +1098,19 @@ export default function App() {
             setShowWinnerPicker(false);
             setRecapHand(finalHand);
           }, 400);
+        }
+      }
+
+      // 올인/콜로 더 이상 액션할 사람이 없으면(라운드 완료 + 액션가능자 ≤1)
+      // 남은 스트리트를 건너뛰고 즉시 winner picker로 점프
+      if (!autoEnded) {
+        const roundDone = computeNextToAct(updated, currentStreet) === null;
+        const actionableLeft = computeActionablePlayers(updated, currentStreet).length;
+        if (roundDone && actionableLeft <= 1) {
+          setTimeout(() => {
+            setCurrentStreet(3);
+            setShowWinnerPicker(true);
+          }, 300);
         }
       }
 
@@ -978,13 +1132,19 @@ export default function App() {
   };
 
   // ── 홀카드 설정 (2장 통째로) ────────────────────────────────────────────
-  const setHoleCards = (seatId, cards) => {
+  const setHoleCards = useCallback((seatId, cards) => {
     setCurrentHand(prev => ({
       ...prev,
       holeCards: { ...prev.holeCards, [seatId]: cards },
     }));
     setCardPickerFor(null);
-  };
+  }, []);
+
+  // 카드 모달용 안정화 콜백 (모달 keydown effect 재등록 최소화)
+  const closeCardPicker = useCallback(() => setCardPickerFor(null), []);
+  const handleCardPick = useCallback((cards) => {
+    if (cardPickerFor) setHoleCards(cardPickerFor.seatId, cards);
+  }, [cardPickerFor, setHoleCards]);
 
   // ── 살아있는 플레이어 계산 ────────────────────────────────────────────────
   // FOLD하지 않은 플레이어 = 살아있음
@@ -1004,111 +1164,14 @@ export default function App() {
   // PREFLOP: 모든 활성 시트
   // FLOP+: 직전 스트리트까지 FOLD 안 한 사람만
   // 추가로 ALL-IN한 사람은 더 이상 액션 불가
-  const getActionablePlayers = () => {
-    if (!currentHand) return [];
-
-    const foldedIds = new Set();
-    const allInIds = new Set();
-    // 현재 스트리트 이전까지의 폴드/올인
-    for (let i = 0; i < currentStreet; i++) {
-      const street = STREETS[i];
-      currentHand.streets[street].forEach(a => {
-        if (a.action === "fold") foldedIds.add(a.seatId);
-        if (a.action === "allin") allInIds.add(a.seatId);
-      });
-    }
-    // 현재 스트리트에서 폴드/올인한 사람도 더 이상 액션 불가
-    currentHand.streets[STREETS[currentStreet]].forEach(a => {
-      if (a.action === "fold") foldedIds.add(a.seatId);
-      if (a.action === "allin") allInIds.add(a.seatId);
-    });
-    return currentHand.seats.filter(s => !foldedIds.has(s.id) && !allInIds.has(s.id));
-  };
+  const getActionablePlayers = () => computeActionablePlayers(currentHand, currentStreet);
 
   // 액션 순서로 정렬
-  const sortedActionable = () => {
-    const players = getActionablePlayers();
-    if (!currentHand) return players;
-
-    // 헤즈업 특수 처리: 프리플랍은 SB→BB, 포스트플랍은 BB→SB
-    const isHeadsUp = currentHand.seats.length === 2;
-    if (isHeadsUp) {
-      const sb = players.find(p => p.position === "SB");
-      const bb = players.find(p => p.position === "BB");
-      if (!sb || !bb) return players;
-      return currentStreet === 0 ? [sb, bb] : [bb, sb];
-    }
-
-    const order = currentStreet === 0 ? POSITION_ORDER : POSTFLOP_ORDER;
-    return [...players].sort((a, b) => {
-      const ai = order.indexOf(a.position);
-      const bi = order.indexOf(b.position);
-      const aIdx = ai === -1 ? order.indexOf("BTN") : ai;
-      const bIdx = bi === -1 ? order.indexOf("BTN") : bi;
-      return aIdx - bIdx;
-    });
-  };
+  const sortedActionable = () => computeSortedActionable(currentHand, currentStreet);
 
   // ── 다음 액션할 플레이어 계산 ─────────────────────────────────────────────
   // 마지막 BET/RAISE/OPEN/ALL-IN 이후 아직 응답 안 한 사람들이 액션해야 함
-  const getNextToAct = () => {
-    if (!currentHand) return null;
-    const street = STREETS[currentStreet];
-    const streetActions = currentHand.streets[street];
-    const actionable = sortedActionable();
-
-    // 마지막 베팅성 액션 위치
-    let lastAggressorIdx = -1;
-    let lastAggressorSeatId = null;
-    for (let i = streetActions.length - 1; i >= 0; i--) {
-      const a = streetActions[i];
-      if (a.action === "open" || a.action === "bet" || a.action === "raise" || a.action === "allin") {
-        lastAggressorIdx = i;
-        lastAggressorSeatId = a.seatId;
-        break;
-      }
-    }
-
-    // 마지막 베팅 이후 이미 응답한 사람들
-    const respondedSeatIds = new Set();
-    if (lastAggressorIdx >= 0) {
-      respondedSeatIds.add(lastAggressorSeatId);
-      for (let i = lastAggressorIdx + 1; i < streetActions.length; i++) {
-        respondedSeatIds.add(streetActions[i].seatId);
-      }
-    } else {
-      streetActions.forEach(a => respondedSeatIds.add(a.seatId));
-    }
-
-    // 헤즈업: 상대방 한 명만 체크하면 됨
-    const isHeadsUp = currentHand.seats.length === 2;
-    if (isHeadsUp) {
-      // 액션 순서대로 아직 응답 안 한 첫 사람
-      for (const p of actionable) {
-        if (!respondedSeatIds.has(p.id)) return p;
-      }
-      return null;
-    }
-
-    if (lastAggressorIdx >= 0) {
-      const aggressorPos = streetActions[lastAggressorIdx].position;
-      const order = currentStreet === 0 ? POSITION_ORDER : POSTFLOP_ORDER;
-      const aggrOrderIdx = order.indexOf(aggressorPos);
-
-      for (let offset = 1; offset <= order.length; offset++) {
-        const targetPos = order[(aggrOrderIdx + offset) % order.length];
-        const player = actionable.find(p => p.position === targetPos);
-        if (player && !respondedSeatIds.has(player.id)) {
-          return player;
-        }
-      }
-    } else {
-      for (const p of actionable) {
-        if (!respondedSeatIds.has(p.id)) return p;
-      }
-    }
-    return null;
-  };
+  const getNextToAct = () => computeNextToAct(currentHand, currentStreet);
 
   // 라운드 완료 여부 (모두 응답했으면 다음 스트리트로 가도 됨)
   const isRoundComplete = () => {
@@ -1133,21 +1196,140 @@ export default function App() {
     }
   };
 
+  // ── 액션 가용성 체크 (UI 버튼과 단축키 공용) ─────────────────────────────
+  const isActionDisabled = (actionId, player) => {
+    if (!currentHand || !player) return true;
+    const streetActions = currentHand.streets[currentStreetName];
+    const someoneOpened = streetActions.some(a => a.action === "open" || a.action === "raise" || a.action === "allin");
+    const someoneBet = streetActions.some(a => a.action === "bet" || a.action === "raise" || a.action === "allin");
+    const lastAggressive = [...streetActions].reverse()
+      .find(a => a.action === "open" || a.action === "bet" || a.action === "raise" || a.action === "allin");
+
+    const holeCards = currentHand.holeCards[player.id] || [null, null];
+    const hasCards = holeCards[0] && holeCards[1];
+
+    if (currentStreet === 0 && !hasCards && actionId !== "fold") return true;
+    if (actionId === "open") {
+      if (currentStreet !== 0) return true;
+      if (someoneOpened) return true;
+    }
+    if (actionId === "bet") {
+      if (currentStreet === 0) return true;
+      if (someoneBet) return true;
+    }
+    if (actionId === "raise") {
+      // 프리플랍은 베팅 없어도 RAISE 허용(운영진 입력 편의). 포스트플랍은 베팅 있어야.
+      if (currentStreet > 0 && !someoneBet) return true;
+    }
+    if (actionId === "check") {
+      if (someoneOpened || someoneBet) return true;
+      // 프리플랍: 베팅 없을 때 BB 옵션만 체크 허용
+      if (currentStreet === 0 && player.position !== "BB") return true;
+    }
+    if (actionId === "call") {
+      if (currentStreet > 0 && !someoneBet) return true;
+      if (lastAggressive?.seatId === player.id) return true;
+    }
+    return false;
+  };
+
+  // ── 키보드 단축키 ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    const handleKey = (e) => {
+      // 입력창에 포커스 있으면 무시
+      const tag = e.target.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+
+      // 카드 선택 모달이 열려있으면 메인 단축키 무시 (모달이 자체 처리)
+      if (cardPickerFor) return;
+
+      const key = e.key.toLowerCase();
+
+      // 리캡 모달 열림: C=복사, Enter/N=닫기
+      if (recapHand) {
+        if (key === "c") {
+          const text = toSheetCell(handToText(recapHand));
+          if (navigator.clipboard) navigator.clipboard.writeText(text);
+        } else if (key === "enter" || key === "n") {
+          setRecapHand(null);
+        }
+        return;
+      }
+
+      // 위너 선택 화면: 숫자로 토글, Enter로 확정
+      if (showWinnerPicker && currentHand) {
+        const alive = getAlivePlayers(3);
+        if (key === "enter") {
+          const winnerSeats = alive.filter(s => selectedWinners.includes(s.id));
+          if (winnerSeats.length > 0) {
+            finalizeWinners(winnerSeats);
+            setSelectedWinners([]);
+          }
+          return;
+        }
+        const idx = parseInt(e.key, 10) - 1;
+        if (!isNaN(idx) && alive[idx]) {
+          const sid = alive[idx].id;
+          setSelectedWinners(prev =>
+            prev.includes(sid) ? prev.filter(x => x !== sid) : [...prev, sid]
+          );
+        }
+        return;
+      }
+
+      // 핸드 진행 중
+      if (currentHand) {
+        const nextPlayer = getNextToAct();
+        // 1~7 = 액션 (ACTIONS 순서: open bet raise call check fold allin)
+        if (nextPlayer && e.key >= "1" && e.key <= "7") {
+          const action = ACTIONS[parseInt(e.key, 10) - 1];
+          if (action && !isActionDisabled(action.id, nextPlayer)) {
+            logAction(nextPlayer.id, action.id);
+          }
+          return;
+        }
+        // Enter = 다음 스트리트 (라운드 완료 시)
+        if (key === "enter" && isRoundComplete()) {
+          nextStreet();
+          return;
+        }
+        // Z = undo
+        if (key === "z") {
+          undoLastAction();
+          return;
+        }
+      } else {
+        // 핸드 없을 때 N or Enter = 새 핸드
+        if ((key === "n" || key === "enter") && activeSeats.length >= 2) {
+          startHand();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [currentHand, currentStreet, cardPickerFor, recapHand, showWinnerPicker, selectedWinners, seats]);
+
   // ── 위너 선택 → 핸드 종료 → 포지션 로테이션 ──────────────────────────────
-  const selectWinner = (winnerSeat) => {
-    const winnerCards = cardsToText(currentHand.holeCards[winnerSeat.id]);
+  // 다중 위너 확정 (1명이면 단독, 2명+면 스플릿/찹)
+  const finalizeWinners = (winnerSeats) => {
+    if (!winnerSeats || winnerSeats.length === 0) return;
+    const names = winnerSeats.map(s => s.name);
+    const winnerName = names.length === 1
+      ? names[0]
+      : `SPLIT: ${names.join(", ")}`;
     const finalHand = {
       ...currentHand,
-      winnerName: winnerSeat.name,
-      winnerCards,
-      winnerSeatId: winnerSeat.id,
+      winnerName,
+      winnerNames: names,
+      isSplit: names.length > 1,
     };
     setHands(prev => [finalHand, ...prev]);
     setSeats(prev => rotatePositions(prev));
     setCurrentHand(null);
     setCurrentStreet(0);
     setShowWinnerPicker(false);
-    setRecapHand(finalHand); // 모달 띄우기
+    setRecapHand(finalHand);
   };
 
   const discardHand = () => {
@@ -1466,43 +1648,85 @@ export default function App() {
             }}>
               <div style={{
                 color: "#f59e0b", fontSize: 13, fontWeight: 900,
-                letterSpacing: 2, marginBottom: 14, textAlign: "center",
+                letterSpacing: 2, marginBottom: 6, textAlign: "center",
               }}>🏆 WINNER 선택</div>
+              <div style={{
+                color: "#475569", fontSize: 10, marginBottom: 12, textAlign: "center",
+              }}>여러 명 선택 시 SPLIT(찹) 처리</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {/* 살아있는 사람만 표시 */}
-                {getAlivePlayers(3).map(seat => (
-                  <button
-                    key={seat.id}
-                    onClick={() => selectWinner(seat)}
-                    style={{
-                      padding: "12px 16px",
-                      background: "#0a1628",
-                      border: "1px solid #1a2d45",
-                      borderRadius: 10,
-                      color: "#e2e8f0",
-                      display: "flex", alignItems: "center", justifyContent: "space-between",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <span style={{
-                        background: "#0f172a", border: "1px solid #1e293b",
-                        fontSize: 10, color: "#10b981", padding: "1px 6px", borderRadius: 4,
-                      }}>{seat.position}</span>
-                      <span style={{ fontSize: 14, fontWeight: 700 }}>{seat.name}</span>
-                      {cardsToText(currentHand.holeCards[seat.id]) && (
-                        <span style={{
-                          color: "#fbbf24", fontSize: 13, fontWeight: 900,
-                          fontFamily: "'Georgia',serif",
-                        }}>{cardsToText(currentHand.holeCards[seat.id])}</span>
+                {getAlivePlayers(3).map(seat => {
+                  const isSel = selectedWinners.includes(seat.id);
+                  return (
+                    <button
+                      key={seat.id}
+                      onClick={() => setSelectedWinners(prev =>
+                        prev.includes(seat.id)
+                          ? prev.filter(id => id !== seat.id)
+                          : [...prev, seat.id]
                       )}
-                    </div>
-                    <span style={{ color: "#f59e0b", fontSize: 16 }}>🏆</span>
-                  </button>
-                ))}
+                      style={{
+                        padding: "12px 16px",
+                        background: isSel ? "#1a3d2e" : "#0a1628",
+                        border: `2px solid ${isSel ? "#10b981" : "#1a2d45"}`,
+                        borderRadius: 10,
+                        color: "#e2e8f0",
+                        display: "flex", alignItems: "center", justifyContent: "space-between",
+                        cursor: "pointer",
+                        transition: "all .15s",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <span style={{
+                          width: 20, height: 20, borderRadius: 5,
+                          border: `2px solid ${isSel ? "#10b981" : "#475569"}`,
+                          background: isSel ? "#10b981" : "transparent",
+                          color: "#000", fontSize: 12, fontWeight: 900,
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                        }}>{isSel ? "✓" : ""}</span>
+                        <span style={{
+                          background: "#0f172a", border: "1px solid #1e293b",
+                          fontSize: 10, color: "#10b981", padding: "1px 6px", borderRadius: 4,
+                        }}>{seat.position}</span>
+                        <span style={{ fontSize: 14, fontWeight: 700 }}>{seat.name}</span>
+                        {cardsToText(currentHand.holeCards[seat.id]) && (
+                          <span style={{
+                            color: "#fbbf24", fontSize: 13, fontWeight: 900,
+                            fontFamily: "'Georgia',serif",
+                          }}>{cardsToText(currentHand.holeCards[seat.id])}</span>
+                        )}
+                      </div>
+                      <span style={{ color: isSel ? "#10b981" : "#374151", fontSize: 16 }}>🏆</span>
+                    </button>
+                  );
+                })}
               </div>
-              <button onClick={discardHand} style={{
-                marginTop: 10, width: "100%", padding: "8px",
+
+              {/* 확정 버튼 */}
+              <button
+                onClick={() => {
+                  const winnerSeats = getAlivePlayers(3).filter(s => selectedWinners.includes(s.id));
+                  if (winnerSeats.length > 0) {
+                    finalizeWinners(winnerSeats);
+                    setSelectedWinners([]);
+                  }
+                }}
+                disabled={selectedWinners.length === 0}
+                style={{
+                  width: "100%", marginTop: 12, padding: "13px",
+                  background: selectedWinners.length === 0 ? "#070f1c"
+                    : "linear-gradient(135deg, #f59e0b, #b45309)",
+                  border: "none", borderRadius: 10,
+                  color: selectedWinners.length === 0 ? "#1a2d45" : "#000",
+                  fontSize: 13, fontWeight: 900, letterSpacing: 2,
+                  cursor: selectedWinners.length === 0 ? "not-allowed" : "pointer",
+                }}
+              >
+                {selectedWinners.length <= 1 ? "🏆 위너 확정"
+                  : `🏆 SPLIT 확정 (${selectedWinners.length}명)`}
+              </button>
+
+              <button onClick={() => { discardHand(); setSelectedWinners([]); }} style={{
+                marginTop: 8, width: "100%", padding: "8px",
                 background: "transparent", border: "1px dashed #1a2d45",
                 borderRadius: 8, color: "#374151",
                 fontSize: 11, cursor: "pointer",
@@ -1562,25 +1786,16 @@ export default function App() {
                   {(() => {
                     const rawEntries = currentHand.streets[currentStreetName];
                     const isPreflop = currentStreet === 0;
+                    const isHeadsUp = currentHand.seats.length === 2;
 
-                    // 첫 액션 폴드 숨김
-                    let entries;
-                    let hiddenFirstFolds = 0;
+                    let entries, showAllFold = false;
                     if (isPreflop) {
-                      const actedSeats = new Set();
-                      entries = [];
-                      rawEntries.forEach(e => {
-                        if (e.action === "fold" && !actedSeats.has(e.seatId)) {
-                          hiddenFirstFolds++;
-                        } else {
-                          actedSeats.add(e.seatId);
-                          entries.push(e);
-                        }
-                      });
+                      const r = processPreflopEntries(rawEntries, isHeadsUp);
+                      entries = r.entries;
+                      showAllFold = r.showAllFold;
                     } else {
                       entries = rawEntries;
                     }
-                    const showAllFold = isPreflop && entries.length === 0 && hiddenFirstFolds > 0;
 
                     const seenSeats = new Set();
                     const items = entries.map((e, i) => {
@@ -1644,11 +1859,6 @@ export default function App() {
               {/* 현재 액션할 사람 (단일 카드) */}
               {(() => {
                 const nextPlayer = getNextToAct();
-                const streetActions = currentHand.streets[currentStreetName];
-                const someoneOpened = streetActions.some(a => a.action === "open" || a.action === "raise" || a.action === "allin");
-                const someoneBet = streetActions.some(a => a.action === "bet" || a.action === "raise" || a.action === "allin");
-                const lastAggressive = [...streetActions].reverse()
-                  .find(a => a.action === "open" || a.action === "bet" || a.action === "raise" || a.action === "allin");
 
                 if (!nextPlayer) {
                   return (
@@ -1739,37 +1949,9 @@ export default function App() {
 
                     {/* 액션 버튼 */}
                     <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                      {ACTIONS.map(action => {
-                        let disabled = false;
-
-                        // 프리플랍에서 카드 없으면 FOLD만 가능
-                        const holeCards = currentHand.holeCards[nextPlayer.id] || [null, null];
-                        const hasCards = holeCards[0] && holeCards[1];
-                        if (currentStreet === 0 && !hasCards && action.id !== "fold") {
-                          disabled = true;
-                        }
-
-                        if (action.id === "open") {
-                          if (currentStreet !== 0) disabled = true;
-                          if (someoneOpened) disabled = true;
-                        }
-                        if (action.id === "bet") {
-                          if (currentStreet === 0) disabled = true;
-                          if (someoneBet) disabled = true;
-                        }
-                        if (action.id === "raise") {
-                          if (currentStreet === 0 && !someoneOpened) disabled = true;
-                          if (currentStreet > 0 && !someoneBet) disabled = true;
-                        }
-                        if (action.id === "check") {
-                          if (someoneOpened || someoneBet) disabled = true;
-                        }
-                        if (action.id === "call") {
-                          // 프리플랍이 아닌데 베팅 없으면 콜 불가
-                          if (currentStreet > 0 && !someoneBet) disabled = true;
-                          // 본인이 마지막 베팅자면 콜 불가
-                          if (lastAggressive?.seatId === nextPlayer.id) disabled = true;
-                        }
+                      {ACTIONS.map((action, actionIdx) => {
+                        // 단축키와 동일한 가용성 로직 공용 사용
+                        const disabled = isActionDisabled(action.id, nextPlayer);
 
                         return (
                           <button
@@ -1788,8 +1970,15 @@ export default function App() {
                               letterSpacing: 1,
                               opacity: disabled ? .4 : 1,
                               transition: "all .1s",
+                              position: "relative",
                             }}
-                          >{action.label}</button>
+                          >
+                            <span style={{
+                              position: "absolute", top: 2, left: 5,
+                              fontSize: 8, opacity: .5, fontWeight: 700,
+                            }}>{actionIdx + 1}</span>
+                            {action.label}
+                          </button>
                         );
                       })}
                     </div>
@@ -1905,7 +2094,10 @@ export default function App() {
                 <>
                   <button
                     onClick={() => {
-                      const all = hands.slice().reverse().map(handToText).join("\n\n");
+                      // 핸드 하나당 한 셀(여러 줄), 핸드끼리는 세로(다음 행)로 배치
+                      const all = hands.slice().reverse()
+                        .map(h => toSheetCell(handToText(h)))
+                        .join("\n");
                       if (navigator.clipboard) navigator.clipboard.writeText(all);
                     }}
                     style={{
@@ -1958,8 +2150,8 @@ export default function App() {
       {/* 카드 선택 모달 */}
       <CardPickerModal
         open={!!cardPickerFor}
-        onClose={() => setCardPickerFor(null)}
-        onSelectBoth={cards => setHoleCards(cardPickerFor.seatId, cards)}
+        onClose={closeCardPicker}
+        onSelectBoth={handleCardPick}
         initialCards={currentHand?.holeCards[cardPickerFor?.seatId] || [null, null]}
       />
 
