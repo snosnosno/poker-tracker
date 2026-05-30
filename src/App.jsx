@@ -2076,6 +2076,40 @@ export default function App() {
                 : "시트를 설정하세요 (최소 2명)"}
             </button>
           )}
+
+          {/* 초기화 (핸드 진행 중이 아닐 때만) */}
+          {!isHandActive && (
+            <button
+              onClick={() => {
+                const ok = window.confirm(
+                  "전체 초기화하시겠습니까?\n\n저장된 모든 핸드 기록과 시트 설정이 삭제됩니다.\n이 작업은 되돌릴 수 없습니다."
+                );
+                if (!ok) return;
+                setHands([]);
+                setSeats(initSeats());
+                setCurrentHand(null);
+                setCurrentStreet(0);
+                setShowWinnerPicker(false);
+                setSelectedWinners([]);
+                setRecapHand(null);
+                setEditingSeat(null);
+                setCardPickerFor(null);
+              }}
+              style={{
+                width: "100%", padding: "10px",
+                marginTop: 10,
+                background: "transparent",
+                border: "1px solid #3a1520",
+                borderRadius: 10,
+                color: "#7f1d2e",
+                fontSize: 11, fontWeight: 700,
+                cursor: "pointer",
+                letterSpacing: 2,
+              }}
+            >
+              🗑 전체 초기화 (핸드 + 시트)
+            </button>
+          )}
         </div>
       )}
 
