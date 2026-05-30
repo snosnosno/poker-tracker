@@ -829,8 +829,18 @@ function RecapModal({ hand, onClose }) {
 // 메인 앱
 // ══════════════════════════════════════════════════════════════════════════════
 export default function App() {
-  const [seats, setSeats] = useState(initSeats());
-  const [hands, setHands] = useState([]);
+  // localStorage에서 초기값 불러오기
+  const loadFromStorage = (key, fallback) => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const [seats, setSeats] = useState(() => loadFromStorage("pt_seats", initSeats()));
+  const [hands, setHands] = useState(() => loadFromStorage("pt_hands", []));
   const [currentHand, setCurrentHand] = useState(null);
   const [currentStreet, setCurrentStreet] = useState(0);
   const [editingSeat, setEditingSeat] = useState(null);
@@ -841,32 +851,60 @@ export default function App() {
   const [cardPickerFor, setCardPickerFor] = useState(null); // { seatId }
   const [recapHand, setRecapHand] = useState(null); // 방금 끝난 핸드를 모달로 보여줌
 
+  // hands 변경되면 localStorage에 자동 저장
+  useEffect(() => {
+    try { localStorage.setItem("pt_hands", JSON.stringify(hands)); } catch {}
+  }, [hands]);
+
+  // seats 변경되면 localStorage에 자동 저장
+  useEffect(() => {
+    try { localStorage.setItem("pt_seats", JSON.stringify(seats)); } catch {}
+  }, [seats]);
+
   const activeSeats = seats.filter(s => s.active && s.name);
 
   // ── 핸드 시작 ─────────────────────────────────────────────────────────────
   const startHand = () => {
     if (activeSeats.length < 2) return;
-    // 활성 시트에 포지션 자동 할당
-    const positions = assignPositions(activeSeats.length);
-    const updatedSeats = seats.map(s => {
-      if (!s.active || !s.name) return s;
-      const idx = activeSeats.findIndex(a => a.id === s.id);
-      return { ...s, position: positions[idx] };
-    });
-    setSeats(updatedSeats);
 
-    const handSeats = activeSeats.map((s, i) => ({
-      id: s.id,
-      name: s.name,
-      position: positions[i],
-    }));
+    // 첫 핸드(hands가 비어있고 시트에 포지션이 제대로 안 잡혀있으면) 자동 할당,
+    // 그 외에는 현재 시트의 포지션을 그대로 사용 (로테이션 결과 보존)
+    const validPositions = new Set(POSITION_ORDER);
+    const allHaveValidPos = activeSeats.every(s => validPositions.has(s.position));
+    const noDuplicatePos = new Set(activeSeats.map(s => s.position)).size === activeSeats.length;
+
+    let updatedSeats = seats;
+    let handSeats;
+
+    if (!allHaveValidPos || !noDuplicatePos) {
+      // 포지션이 깨졌으면 자동 재할당
+      const positions = assignPositions(activeSeats.length);
+      updatedSeats = seats.map(s => {
+        if (!s.active || !s.name) return s;
+        const idx = activeSeats.findIndex(a => a.id === s.id);
+        return { ...s, position: positions[idx] };
+      });
+      setSeats(updatedSeats);
+      handSeats = activeSeats.map((s, i) => ({
+        id: s.id,
+        name: s.name,
+        position: positions[i],
+      }));
+    } else {
+      // 정상 상태 → 현재 포지션 유지
+      handSeats = activeSeats.map(s => ({
+        id: s.id,
+        name: s.name,
+        position: s.position,
+      }));
+    }
 
     setCurrentHand({
       id: Date.now(),
       number: hands.length + 1,
       seats: handSeats,
       streets: { PREFLOP: [], FLOP: [], TURN: [], RIVER: [] },
-      holeCards: {}, // { seatId: [card1, card2] }
+      holeCards: {},
       winner: null,
       startedAt: new Date().toLocaleTimeString("ko-KR"),
     });
@@ -1864,19 +1902,35 @@ export default function App() {
             </span>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               {hands.length > 0 && (
-                <button
-                  onClick={() => {
-                    const all = hands.slice().reverse().map(handToText).join("\n\n");
-                    if (navigator.clipboard) navigator.clipboard.writeText(all);
-                  }}
-                  style={{
-                    background: "#0a1628", border: "1px solid #1a2d45",
-                    borderRadius: 6, padding: "3px 10px",
-                    color: "#94a3b8", fontSize: 10, fontWeight: 700,
-                    letterSpacing: 1, cursor: "pointer",
-                    fontFamily: "'Courier New',monospace",
-                  }}
-                >📋 ALL</button>
+                <>
+                  <button
+                    onClick={() => {
+                      const all = hands.slice().reverse().map(handToText).join("\n\n");
+                      if (navigator.clipboard) navigator.clipboard.writeText(all);
+                    }}
+                    style={{
+                      background: "#0a1628", border: "1px solid #1a2d45",
+                      borderRadius: 6, padding: "3px 10px",
+                      color: "#94a3b8", fontSize: 10, fontWeight: 700,
+                      letterSpacing: 1, cursor: "pointer",
+                      fontFamily: "'Courier New',monospace",
+                    }}
+                  >📋 ALL</button>
+                  <button
+                    onClick={() => {
+                      if (window.confirm(`전체 ${hands.length}개 핸드를 삭제할까요?\n복구 불가능합니다.`)) {
+                        setHands([]);
+                      }
+                    }}
+                    style={{
+                      background: "#2d1a1a", border: "1px solid #4a2020",
+                      borderRadius: 6, padding: "3px 10px",
+                      color: "#dc2626", fontSize: 10, fontWeight: 700,
+                      letterSpacing: 1, cursor: "pointer",
+                      fontFamily: "'Courier New',monospace",
+                    }}
+                  >🗑 전체삭제</button>
+                </>
               )}
               <span style={{
                 background: "#0a1628", color: "#10b981",
