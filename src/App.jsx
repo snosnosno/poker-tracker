@@ -24,6 +24,23 @@ const POSITION_ORDER = ["UTG", "UTG+1", "MP", "MP+1", "HJ", "CO", "D", "SB", "BB
 // 포스트플랍 액션 순서 = SB → BB → UTG → ... → D
 const POSTFLOP_ORDER = ["SB", "BB", "UTG", "UTG+1", "MP", "MP+1", "HJ", "CO", "D"];
 
+// RFID 화면 표기 매핑 (내부 코드 → RFID 화면에 보이는 라벨)
+// 내부 로직(정렬/N-BET)은 POSITION_ORDER 코드를 그대로 쓰고, 표시할 때만 변환
+const POSITION_LABEL = {
+  "UTG": "UTG",
+  "UTG+1": "+1",
+  "MP": "+2",
+  "MP+1": "MP",
+  "HJ": "HJ",
+  "CO": "CO",
+  "D": "D",
+  "SB": "SB",
+  "BB": "BB",
+};
+function posLabel(pos) {
+  return POSITION_LABEL[pos] || pos || "";
+}
+
 // 카드
 const RANKS = ["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"];
 
@@ -127,7 +144,7 @@ function handToText(hand) {
 
       let prefix = "";
       if (isPreflop && isFirstForPlayer) {
-        prefix = `${e.position} ${e.playerName} `;
+        prefix = `${posLabel(e.position)} ${e.playerName} `;
         if (cardsText) prefix += `${cardsText} `;
         else prefix += "(?) ";
       } else if (cardsText) {
@@ -154,33 +171,104 @@ function getSeatPos(index, total = 9, rx = 39, ry = 31) {
   return { x: 50 + rx * Math.cos(angle), y: 50 + ry * Math.sin(angle) };
 }
 
-// 포지션 로테이션 (활성 시트 기준 1칸 shift)
-function rotatePositions(seats) {
-  const actives = seats.filter(s => s.active && s.name);
-  if (actives.length < 2) return seats;
-  const ids = actives.map(s => s.id);
-  const posArr = actives.map(s => s.position);
-  // 마지막 포지션을 첫번째로 (BTN→CO, SB→BTN, BB→SB 방향)
-  const rotated = [posArr[posArr.length - 1], ...posArr.slice(0, -1)];
-  return seats.map(s => {
-    const idx = ids.indexOf(s.id);
-    return idx === -1 ? s : { ...s, position: rotated[idx] };
-  });
+// ── C: 버튼 자리 기반 포지션 계산 (데드 스몰/데드 버튼 자동) ─────────────────
+// 인원수별 포지션 풀 (BB~UTG). 데드가 없을 때의 정상 집합.
+const FULL_BY_COUNT = {
+  3: ["D", "SB", "BB"],
+  4: ["CO", "D", "SB", "BB"],
+  5: ["HJ", "CO", "D", "SB", "BB"],
+  6: ["UTG", "HJ", "CO", "D", "SB", "BB"],
+  7: ["UTG", "MP", "HJ", "CO", "D", "SB", "BB"],
+  8: ["UTG", "UTG+1", "MP", "HJ", "CO", "D", "SB", "BB"],
+  9: ["UTG", "UTG+1", "MP", "MP+1", "HJ", "CO", "D", "SB", "BB"],
+};
+
+// 핸드에 실제 참여하는 시트 (활성 + 이름 있음 + 아웃 아님)
+function isPlaying(s) {
+  return !!(s && s.active && s.name && !s.out);
 }
 
-// 활성 시트 N명에 맞는 포지션 할당
-function assignPositions(activeCount) {
-  const presets = {
-    2: ["D", "BB"], // 헤즈업 (D=딜러, SB 겸 버튼)
-    3: ["D", "SB", "BB"],
-    4: ["CO", "D", "SB", "BB"],
-    5: ["HJ", "CO", "D", "SB", "BB"],
-    6: ["UTG", "HJ", "CO", "D", "SB", "BB"],
-    7: ["UTG", "MP", "HJ", "CO", "D", "SB", "BB"],
-    8: ["UTG", "UTG+1", "MP", "HJ", "CO", "D", "SB", "BB"],
-    9: ["UTG", "UTG+1", "MP", "MP+1", "HJ", "CO", "D", "SB", "BB"],
-  };
-  return presets[activeCount] || presets[9];
+// 물리 좌석 순서에서 fromIdx 다음(시계방향) 첫 playing 자리 인덱스
+function nextPlayingIdx(seatsInOrder, fromIdx) {
+  const n = seatsInOrder.length;
+  for (let k = 1; k <= n; k++) {
+    const idx = (fromIdx + k) % n;
+    if (isPlaying(seatsInOrder[idx])) return idx;
+  }
+  return -1;
+}
+
+// 버튼 자리 기준으로 각 참여 시트의 포지션 계산.
+// 반환: { positions: { [seatId]: "D"|"SB"|... }, dead: { button, small } }
+function computePositions(seatsInOrder, buttonSeatId) {
+  const n = seatsInOrder.length;
+  const playing = seatsInOrder.filter(isPlaying);
+  const result = { positions: {}, dead: { button: false, small: false } };
+  if (playing.length < 2) return result;
+
+  const btnIdx = seatsInOrder.findIndex(s => s.id === buttonSeatId);
+  if (btnIdx === -1) return result;
+
+  // 헤즈업: 버튼=D(SB 겸), 다음 playing=BB
+  if (playing.length === 2) {
+    let dIdx = btnIdx;
+    if (!isPlaying(seatsInOrder[btnIdx])) dIdx = nextPlayingIdx(seatsInOrder, btnIdx);
+    const bbIdx = nextPlayingIdx(seatsInOrder, dIdx);
+    result.positions[seatsInOrder[dIdx].id] = "D";
+    result.positions[seatsInOrder[bbIdx].id] = "BB";
+    return result;
+  }
+
+  // 3명 이상
+  if (!isPlaying(seatsInOrder[btnIdx])) result.dead.button = true;
+
+  const sbSeatIdx = (btnIdx + 1) % n;
+  let bbIdx;
+  if (isPlaying(seatsInOrder[sbSeatIdx])) {
+    result.positions[seatsInOrder[sbSeatIdx].id] = "SB";
+    bbIdx = nextPlayingIdx(seatsInOrder, sbSeatIdx);
+  } else {
+    result.dead.small = true;
+    bbIdx = nextPlayingIdx(seatsInOrder, sbSeatIdx);
+  }
+  result.positions[seatsInOrder[bbIdx].id] = "BB";
+
+  if (isPlaying(seatsInOrder[btnIdx])) {
+    result.positions[seatsInOrder[btnIdx].id] = "D";
+  }
+
+  // BB 다음 playing부터 UTG, UTG+1, ... CO 순 배정.
+  // 아직 포지션 못 받은 자리 수 = playing - 배정된 수.
+  // 데드(스몰/버튼)로 D나 SB가 빠지면 early가 그만큼 더 필요하므로,
+  // "필요한 개수+3"명 기준 풀의 early 목록(UTG..CO)을 사용해 표준 명칭을 맞춤.
+  const assignedCount = Object.keys(result.positions).length;
+  const remaining = playing.length - assignedCount;
+  if (remaining > 0) {
+    const refCount = Math.min(remaining + 3, 9);
+    const refFull = FULL_BY_COUNT[refCount] || FULL_BY_COUNT[9];
+    const earlyAll = refFull.filter(p => p !== "D" && p !== "SB" && p !== "BB");
+    // earlyAll 길이가 remaining보다 길 수 있으니 앞에서 remaining개 (UTG부터)
+    const earlyPositions = earlyAll.slice(0, remaining);
+    let cur = bbIdx;
+    for (let i = 0; i < earlyPositions.length; i++) {
+      cur = nextPlayingIdx(seatsInOrder, cur);
+      while (cur !== -1 && result.positions[seatsInOrder[cur].id]) {
+        cur = nextPlayingIdx(seatsInOrder, cur);
+      }
+      if (cur === -1) break;
+      result.positions[seatsInOrder[cur].id] = earlyPositions[i];
+    }
+  }
+
+  return result;
+}
+
+// 버튼을 다음 물리 자리로 한 칸 전진 (사람 유무 무관 = 데드 발생의 핵심)
+function advanceButton(seatsInOrder, buttonSeatId) {
+  const n = seatsInOrder.length;
+  const btnIdx = seatsInOrder.findIndex(s => s.id === buttonSeatId);
+  if (btnIdx === -1) return buttonSeatId;
+  return seatsInOrder[(btnIdx + 1) % n].id;
 }
 
 // ── 액션 계산 순수 헬퍼 (hand 객체 + 스트리트 인덱스 기반) ──────────────────
@@ -698,7 +786,7 @@ function HandHistoryCard({ hand }) {
                         {/* 프리플랍 첫 액션만 포지션+이름 표시 */}
                         {isPreflop && isFirstForPlayer && (
                           <>
-                            <span style={{ color: "#10b981", fontSize: 11, fontWeight: 700 }}>{e.position}</span>
+                            <span style={{ color: "#10b981", fontSize: 11, fontWeight: 700 }}>{posLabel(e.position)}</span>
                             {" "}
                             <span style={{ color: "#e2e8f0", fontSize: 12, fontWeight: 700 }}>{e.playerName}</span>
                             {" "}
@@ -880,7 +968,7 @@ function RecapModal({ hand, onClose }) {
                       <span key={i} style={{ marginRight: 6, whiteSpace: "nowrap" }}>
                         {isPreflop && isFirstForPlayer && (
                           <>
-                            <span style={{ color: "#10b981", fontSize: 11, fontWeight: 700 }}>{e.position}</span>{" "}
+                            <span style={{ color: "#10b981", fontSize: 11, fontWeight: 700 }}>{posLabel(e.position)}</span>{" "}
                             <span style={{ color: "#e2e8f0", fontSize: 12, fontWeight: 700 }}>{e.playerName}</span>{" "}
                           </>
                         )}
@@ -979,11 +1067,14 @@ export default function App() {
 
   const [seats, setSeats] = useState(() => loadFromStorage("pt_seats", initSeats()));
   const [hands, setHands] = useState(() => loadFromStorage("pt_hands", []));
+  const [buttonSeatId, setButtonSeatId] = useState(() => loadFromStorage("pt_button", null));
   const [currentHand, setCurrentHand] = useState(null);
   const [currentStreet, setCurrentStreet] = useState(0);
   const [editingSeat, setEditingSeat] = useState(null);
   const [editName, setEditName] = useState("");
   const [editPosition, setEditPosition] = useState("");
+  const [editOut, setEditOut] = useState(false);
+  const [posEditOpen, setPosEditOpen] = useState(false);
   const [activeView, setActiveView] = useState("table");
   const [showWinnerPicker, setShowWinnerPicker] = useState(false);
   const [selectedWinners, setSelectedWinners] = useState([]); // 다중 위너 선택용 seatId 배열
@@ -1000,48 +1091,46 @@ export default function App() {
     try { window.localStorage.setItem("pt_seats", JSON.stringify(seats)); } catch {}
   }, [seats]);
 
+  // 버튼 위치 저장
+  useEffect(() => {
+    try { window.localStorage.setItem("pt_button", JSON.stringify(buttonSeatId)); } catch {}
+  }, [buttonSeatId]);
+
   const activeSeats = seats.filter(s => s.active && s.name);
+  // 실제 핸드에 참여하는 시트 (아웃된 시트 제외 = 데드버튼/데드블라인드 표현)
+  const playingSeats = activeSeats.filter(s => !s.out);
 
   // ── 핸드 시작 ─────────────────────────────────────────────────────────────
   const startHand = () => {
-    if (activeSeats.length < 2) return;
+    if (playingSeats.length < 2) return;
 
-    // 첫 핸드(hands가 비어있고 시트에 포지션이 제대로 안 잡혀있으면) 자동 할당,
-    // 그 외에는 현재 시트의 포지션을 그대로 사용 (로테이션 결과 보존)
-    const validPositions = new Set(POSITION_ORDER);
-    const allHaveValidPos = activeSeats.every(s => validPositions.has(s.position));
-    const noDuplicatePos = new Set(activeSeats.map(s => s.position)).size === activeSeats.length;
-
-    let updatedSeats = seats;
-    let handSeats;
-
-    if (!allHaveValidPos || !noDuplicatePos) {
-      // 포지션이 깨졌으면 자동 재할당
-      const positions = assignPositions(activeSeats.length);
-      updatedSeats = seats.map(s => {
-        if (!s.active || !s.name) return s;
-        const idx = activeSeats.findIndex(a => a.id === s.id);
-        return { ...s, position: positions[idx] };
-      });
-      setSeats(updatedSeats);
-      handSeats = activeSeats.map((s, i) => ({
-        id: s.id,
-        name: s.name,
-        position: positions[i],
-      }));
-    } else {
-      // 정상 상태 → 현재 포지션 유지
-      handSeats = activeSeats.map(s => ({
-        id: s.id,
-        name: s.name,
-        position: s.position,
-      }));
+    // 버튼 위치 결정: 지정 안 됐으면 첫 playing 시트를 버튼으로
+    let btn = buttonSeatId;
+    const btnValid = btn != null && seats.some(s => s.id === btn);
+    if (!btnValid) {
+      btn = playingSeats[0].id;
+      setButtonSeatId(btn);
     }
+
+    // 버튼 자리 기준 포지션 계산 (데드 스몰/버튼 자동)
+    const { positions, dead } = computePositions(seats, btn);
+
+    // 참여 시트 + 계산된 포지션 (계산에서 빠진 시트는 제외 = 안전)
+    const handSeats = playingSeats
+      .filter(s => positions[s.id])
+      .map(s => ({ id: s.id, name: s.name, position: positions[s.id] }));
+
+    // 원본 seats에도 포지션 반영 (테이블 표시/수동수정 일관성)
+    setSeats(prev => prev.map(s =>
+      positions[s.id] ? { ...s, position: positions[s.id] } : s
+    ));
 
     setCurrentHand({
       id: Date.now(),
       number: hands.length + 1,
       seats: handSeats,
+      buttonSeatId: btn,
+      dead,
       streets: { PREFLOP: [], FLOP: [], TURN: [], RIVER: [] },
       holeCards: {},
       winner: null,
@@ -1092,7 +1181,7 @@ export default function App() {
           };
           setTimeout(() => {
             setHands(h => [finalHand, ...h]);
-            setSeats(s => rotatePositions(s));
+            setButtonSeatId(b => advanceButton(seats, b));
             setCurrentHand(null);
             setCurrentStreet(0);
             setShowWinnerPicker(false);
@@ -1115,6 +1204,60 @@ export default function App() {
       }
 
       return updated;
+    });
+  };
+
+  // ── 핸드 진행 중 포지션 수정 (RFID 화면과 어긋날 때 즉석 정정) ──────────────
+  // D로 지정 → 버튼을 그 자리로 옮기고 핸드 전체 포지션 재계산 (다음 핸드까지 반영).
+  // 그 외 포지션 → 현재 핸드에서만 swap (버튼 무관).
+  const changeSeatPosition = (seatId, newPos) => {
+    if (newPos === "D") {
+      // 버튼 이동 → 전체 재계산
+      setButtonSeatId(seatId);
+      const { positions } = computePositions(seats, seatId);
+      setCurrentHand(prev => {
+        if (!prev) return prev;
+        const newSeats = prev.seats.map(s =>
+          positions[s.id] ? { ...s, position: positions[s.id] } : s
+        );
+        const posOf = id => positions[id];
+        const newStreets = {};
+        for (const st of STREETS) {
+          newStreets[st] = prev.streets[st].map(a =>
+            posOf(a.seatId) ? { ...a, position: posOf(a.seatId) } : a
+          );
+        }
+        return { ...prev, seats: newSeats, streets: newStreets };
+      });
+      // 원본 seats에도 반영
+      setSeats(prev => prev.map(s =>
+        positions[s.id] ? { ...s, position: positions[s.id] } : s
+      ));
+      return;
+    }
+
+    // 그 외: 현재 핸드에서만 swap
+    setCurrentHand(prev => {
+      if (!prev) return prev;
+      const target = prev.seats.find(s => s.id === seatId);
+      if (!target || target.position === newPos) return prev;
+      const oldPos = target.position;
+      const conflict = prev.seats.find(s => s.id !== seatId && s.position === newPos);
+      const remap = (pos) => {
+        if (pos === newPos && conflict) return oldPos;
+        if (pos === oldPos) return newPos;
+        return pos;
+      };
+      const newSeats = prev.seats.map(s =>
+        s.id === seatId ? { ...s, position: newPos }
+          : (conflict && s.id === conflict.id) ? { ...s, position: oldPos }
+          : s
+      );
+      const newStreets = {};
+      for (const st of STREETS) {
+        newStreets[st] = prev.streets[st].map(a => ({ ...a, position: remap(a.position) }));
+      }
+      return { ...prev, seats: newSeats, streets: newStreets };
     });
   };
 
@@ -1300,7 +1443,7 @@ export default function App() {
         }
       } else {
         // 핸드 없을 때 N or Enter = 새 핸드
-        if ((key === "n" || key === "enter") && activeSeats.length >= 2) {
+        if ((key === "n" || key === "enter") && playingSeats.length >= 2) {
           startHand();
         }
       }
@@ -1325,7 +1468,7 @@ export default function App() {
       isSplit: names.length > 1,
     };
     setHands(prev => [finalHand, ...prev]);
-    setSeats(prev => rotatePositions(prev));
+    setButtonSeatId(b => advanceButton(seats, b));
     setCurrentHand(null);
     setCurrentStreet(0);
     setShowWinnerPicker(false);
@@ -1347,12 +1490,14 @@ export default function App() {
             name: editName.trim(),
             position: editPosition || s.position,
             active: !!editName.trim(),
+            out: editOut,
           }
         : s
     ));
     setEditingSeat(null);
     setEditName("");
     setEditPosition("");
+    setEditOut(false);
   };
 
   const currentStreetName = STREETS[currentStreet];
@@ -1451,7 +1596,7 @@ export default function App() {
                   </>
                 ) : (
                   <div style={{ color: "#0a2e1e", fontSize: 9, letterSpacing: 1 }}>
-                    {activeSeats.length > 0 ? `${activeSeats.length} PLAYERS` : "EMPTY TABLE"}
+                    {playingSeats.length > 0 ? `${playingSeats.length} PLAYERS` : "EMPTY TABLE"}
                   </div>
                 )}
               </div>
@@ -1496,6 +1641,7 @@ export default function App() {
                         setEditingSeat(seat.id);
                         setEditName(seat.name);
                         setEditPosition(seat.position || POSITION_ORDER[seat.id] || "");
+                        setEditOut(!!seat.out);
                       }}
                       style={{
                         width: 46, height: 46, borderRadius: "50%",
@@ -1503,7 +1649,8 @@ export default function App() {
                           ? actionColor + "22"
                           : seat.active ? "#0a2e1e" : "#080c14",
                         border: `2px solid ${
-                          actionColor ? actionColor
+                          seat.out ? "#7f1d2e"
+                            : actionColor ? actionColor
                             : seat.active ? "#10b981" : "#1a2d3f"
                         }`,
                         color: seat.active ? "#e2e8f0" : "#2a4060",
@@ -1511,17 +1658,29 @@ export default function App() {
                         display: "flex", flexDirection: "column",
                         alignItems: "center", justifyContent: "center",
                         gap: 1,
+                        opacity: seat.out ? .4 : 1,
                         boxShadow: actionColor ? `0 0 10px ${actionColor}55`
-                          : seat.active ? "0 0 8px rgba(16,185,129,.2)" : "none",
+                          : seat.active && !seat.out ? "0 0 8px rgba(16,185,129,.2)" : "none",
                       }}
                     >
-                      <span style={{ fontSize: 8, color: seat.active ? "#10b981" : "#1e3a5f", letterSpacing: .5 }}>
-                        {seat.position || (i + 1)}
+                      <span style={{ fontSize: 8, color: seat.out ? "#f87171" : seat.active ? "#10b981" : "#1e3a5f", letterSpacing: .5 }}>
+                        {seat.out ? "OUT" : seat.position ? posLabel(seat.position) : (i + 1)}
                       </span>
                       <span style={{ fontSize: seat.name ? 9 : 14, fontWeight: seat.name ? 700 : 400 }}>
                         {seat.name ? seat.name.slice(0, 5) : "+"}
                       </span>
                     </button>
+                    {buttonSeatId === seat.id && (
+                      <div style={{
+                        position: "absolute", top: -4, right: -4,
+                        width: 18, height: 18, borderRadius: "50%",
+                        background: "#eab308", color: "#000",
+                        fontSize: 9, fontWeight: 900,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        border: "2px solid #050d1a",
+                        zIndex: 12,
+                      }}>D</div>
+                    )}
                     {lastAction && (
                       <div style={{
                         marginTop: 2,
@@ -1555,17 +1714,6 @@ export default function App() {
             }}>
               <div style={{ color: "#475569", fontSize: 9, marginBottom: 10, letterSpacing: 2 }}>
                 SEAT {editingSeat + 1}
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-                {Array.from({ length: 9 }, (_, i) => `P${i + 1}`).map(n => (
-                  <button key={n} onClick={() => setEditName(n)} style={{
-                    padding: "5px 10px",
-                    background: editName === n ? "#10b981" : "#0a1628",
-                    border: `1px solid ${editName === n ? "#10b981" : "#1a2d45"}`,
-                    borderRadius: 6, color: editName === n ? "#000" : "#475569",
-                    fontSize: 11, fontWeight: 700, cursor: "pointer",
-                  }}>{n}</button>
-                ))}
               </div>
               <input
                 value={editName}
@@ -1610,6 +1758,42 @@ export default function App() {
                 })}
               </div>
 
+              {/* 딜러 버튼 놓기 */}
+              <button
+                onClick={() => {
+                  setButtonSeatId(editingSeat);
+                  setEditingSeat(null);
+                  setEditOut(false);
+                }}
+                style={{
+                  width: "100%", marginTop: 12, padding: "9px",
+                  background: buttonSeatId === editingSeat ? "#3a2e0a" : "#0a1628",
+                  border: `1px solid ${buttonSeatId === editingSeat ? "#eab308" : "#1a2d45"}`,
+                  borderRadius: 8,
+                  color: buttonSeatId === editingSeat ? "#eab308" : "#64748b",
+                  fontSize: 11, fontWeight: 700, cursor: "pointer",
+                  letterSpacing: 1,
+                }}
+              >
+                {buttonSeatId === editingSeat ? "🎯 현재 버튼 위치" : "🎯 여기에 버튼(D) 놓기"}
+              </button>
+
+              {/* 아웃 토글 (데드버튼: 포지션 마커는 남고 핸드 액션만 건너뜀) */}
+              <button
+                onClick={() => setEditOut(v => !v)}
+                style={{
+                  width: "100%", marginTop: 8, padding: "9px",
+                  background: editOut ? "#3a1520" : "#0a1628",
+                  border: `1px solid ${editOut ? "#7f1d2e" : "#1a2d45"}`,
+                  borderRadius: 8,
+                  color: editOut ? "#f87171" : "#64748b",
+                  fontSize: 11, fontWeight: 700, cursor: "pointer",
+                  letterSpacing: 1,
+                }}
+              >
+                {editOut ? "🚫 아웃됨 (이번 핸드 미참여 · 포지션 유지)" : "이 자리 아웃시키기"}
+              </button>
+
               <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
                 <button onClick={saveSeatName} style={{
                   flex: 1, padding: "9px",
@@ -1619,9 +1803,10 @@ export default function App() {
                 }}>✓ 확인</button>
                 <button onClick={() => {
                   setSeats(prev => prev.map(s =>
-                    s.id === editingSeat ? { ...s, name: "", active: false } : s
+                    s.id === editingSeat ? { ...s, name: "", active: false, out: false } : s
                   ));
                   setEditingSeat(null);
+                  setEditOut(false);
                 }} style={{
                   padding: "9px 14px",
                   background: "#0a1628", border: "1px solid #1a2d45",
@@ -1686,7 +1871,7 @@ export default function App() {
                         <span style={{
                           background: "#0f172a", border: "1px solid #1e293b",
                           fontSize: 10, color: "#10b981", padding: "1px 6px", borderRadius: 4,
-                        }}>{seat.position}</span>
+                        }}>{posLabel(seat.position)}</span>
                         <span style={{ fontSize: 14, fontWeight: 700 }}>{seat.name}</span>
                         {cardsToText(currentHand.holeCards[seat.id]) && (
                           <span style={{
@@ -1808,7 +1993,7 @@ export default function App() {
                         <span key={i} style={{ whiteSpace: "nowrap" }}>
                           {isPreflop && isFirstForPlayer && (
                             <>
-                              <span style={{ color: "#10b981", fontWeight: 700 }}>{e.position}</span>{" "}
+                              <span style={{ color: "#10b981", fontWeight: 700 }}>{posLabel(e.position)}</span>{" "}
                               <span style={{ color: "#e2e8f0", fontWeight: 700 }}>{e.playerName}</span>{" "}
                             </>
                           )}
@@ -1894,11 +2079,31 @@ export default function App() {
                         border: "1px solid #10b981", padding: "2px 8px",
                         borderRadius: 4, letterSpacing: 1.5, fontWeight: 700,
                       }}>NEXT TO ACT</span>
-                      <span style={{
-                        background: "#020a14", border: "1px solid #10b981",
-                        fontSize: 11, color: "#10b981",
-                        padding: "2px 8px", borderRadius: 4, letterSpacing: 1, fontWeight: 700,
-                      }}>{nextPlayer.position}</span>
+                      {currentHand.dead?.button && (
+                        <span style={{
+                          fontSize: 9, color: "#eab308",
+                          border: "1px solid #eab308", padding: "2px 8px",
+                          borderRadius: 4, letterSpacing: 1, fontWeight: 700,
+                        }}>DEAD BTN</span>
+                      )}
+                      {currentHand.dead?.small && (
+                        <span style={{
+                          fontSize: 9, color: "#f87171",
+                          border: "1px solid #f87171", padding: "2px 8px",
+                          borderRadius: 4, letterSpacing: 1, fontWeight: 700,
+                        }}>DEAD SB</span>
+                      )}
+                      <button
+                        onClick={() => setPosEditOpen(v => !v)}
+                        style={{
+                          background: posEditOpen ? "#10b981" : "#020a14",
+                          border: "1px solid #10b981",
+                          fontSize: 11, color: posEditOpen ? "#000" : "#10b981",
+                          padding: "2px 8px", borderRadius: 4, letterSpacing: 1,
+                          fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                        }}
+                        title="포지션 수정"
+                      >{posLabel(nextPlayer.position)} ▾</button>
                       <span style={{ fontSize: 16, fontWeight: 900, color: "#fff" }}>
                         {nextPlayer.name}
                       </span>
@@ -1947,6 +2152,34 @@ export default function App() {
                       )}
                     </div>
 
+                    {/* 포지션 수정 패널 (배지 클릭 시) */}
+                    {posEditOpen && (
+                      <div style={{
+                        display: "flex", flexWrap: "wrap", gap: 5,
+                        marginBottom: 10, padding: 8,
+                        background: "#020a14", borderRadius: 8,
+                        border: "1px solid #0f3d2a",
+                      }}>
+                        {POSITION_ORDER.map(p => {
+                          const isCur = nextPlayer.position === p;
+                          return (
+                            <button key={p}
+                              onClick={() => { changeSeatPosition(nextPlayer.id, p); setPosEditOpen(false); }}
+                              style={{
+                                padding: "5px 9px",
+                                background: isCur ? "#10b981" : "#0a1628",
+                                border: `1px solid ${isCur ? "#10b981" : "#1a2d45"}`,
+                                borderRadius: 6,
+                                color: isCur ? "#000" : "#94a3b8",
+                                fontSize: 10, fontWeight: 700, cursor: "pointer",
+                                letterSpacing: 1, fontFamily: "inherit",
+                              }}
+                            >{posLabel(p)}</button>
+                          );
+                        })}
+                      </div>
+                    )}
+
                     {/* 액션 버튼 */}
                     <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
                       {ACTIONS.map((action, actionIdx) => {
@@ -1956,7 +2189,7 @@ export default function App() {
                         return (
                           <button
                             key={action.id}
-                            onClick={() => !disabled && logAction(nextPlayer.id, action.id)}
+                            onClick={() => { if (!disabled) { setPosEditOpen(false); logAction(nextPlayer.id, action.id); } }}
                             disabled={disabled}
                             style={{
                               flex: "1 1 auto", minWidth: 70,
@@ -2004,7 +2237,7 @@ export default function App() {
                       display: "inline-flex", alignItems: "center", gap: 4,
                       fontSize: 11,
                     }}>
-                      <span style={{ color: "#10b981", fontSize: 9 }}>{p.position}</span>
+                      <span style={{ color: "#10b981", fontSize: 9 }}>{posLabel(p.position)}</span>
                       <span style={{ color: "#94a3b8", fontWeight: 700 }}>{p.name}</span>
                       {cardsToText(hc) && (
                         <span style={{ color: "#fbbf24", fontFamily: "'Georgia',serif", fontWeight: 900 }}>
@@ -2057,22 +2290,22 @@ export default function App() {
           {!isHandActive && (
             <button
               onClick={startHand}
-              disabled={activeSeats.length < 2}
+              disabled={playingSeats.length < 2}
               style={{
                 width: "100%", padding: "14px",
-                background: activeSeats.length >= 2
+                background: playingSeats.length >= 2
                   ? "linear-gradient(135deg, #10b981, #059669)"
                   : "#070f1c",
-                border: `1px solid ${activeSeats.length >= 2 ? "#10b981" : "#1a2d45"}`,
+                border: `1px solid ${playingSeats.length >= 2 ? "#10b981" : "#1a2d45"}`,
                 borderRadius: 12,
-                color: activeSeats.length >= 2 ? "#000" : "#2a4060",
+                color: playingSeats.length >= 2 ? "#000" : "#2a4060",
                 fontSize: 14, fontWeight: 900,
-                cursor: activeSeats.length >= 2 ? "pointer" : "not-allowed",
+                cursor: playingSeats.length >= 2 ? "pointer" : "not-allowed",
                 letterSpacing: 3,
               }}
             >
-              {activeSeats.length >= 2
-                ? `▶ NEW HAND  (${activeSeats.length}명)`
+              {playingSeats.length >= 2
+                ? `▶ NEW HAND  (${playingSeats.length}명)`
                 : "시트를 설정하세요 (최소 2명)"}
             </button>
           )}
@@ -2087,6 +2320,7 @@ export default function App() {
                 if (!ok) return;
                 setHands([]);
                 setSeats(initSeats());
+                setButtonSeatId(null);
                 setCurrentHand(null);
                 setCurrentStreet(0);
                 setShowWinnerPicker(false);
