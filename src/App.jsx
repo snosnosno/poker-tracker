@@ -12,7 +12,7 @@ const ACTIONS = [
   { id: "raise",  label: "RAISE",  color: "#ef4444" },
   { id: "call",   label: "CALL",   color: "#3b82f6" },
   { id: "check",  label: "CHECK",  color: "#94a3b8" },
-  { id: "fold",   label: "FOLD",   color: "#475569" },
+  { id: "fold",   label: "FOLD",   color: "#7e8ca0" },
   { id: "allin",  label: "ALL-IN", color: "#8b5cf6" },
 ];
 
@@ -183,92 +183,99 @@ const FULL_BY_COUNT = {
   9: ["UTG", "UTG+1", "MP", "MP+1", "HJ", "CO", "D", "SB", "BB"],
 };
 
-// 핸드에 실제 참여하는 시트 (활성 + 이름 있음 + 아웃 아님)
-function isPlaying(s) {
-  return !!(s && s.active && s.name && !s.out);
-}
-
-// 물리 좌석 순서에서 fromIdx 다음(시계방향) 첫 playing 자리 인덱스
-function nextPlayingIdx(seatsInOrder, fromIdx) {
-  const n = seatsInOrder.length;
-  for (let k = 1; k <= n; k++) {
-    const idx = (fromIdx + k) % n;
-    if (isPlaying(seatsInOrder[idx])) return idx;
-  }
-  return -1;
-}
-
 // 버튼 자리 기준으로 각 참여 시트의 포지션 계산.
 // 반환: { positions: { [seatId]: "D"|"SB"|... }, dead: { button, small } }
+// 핵심: 빈 시트(미점유)는 자리 계산에서 완전히 무시. 아웃(점유했다 나감)만 데드 발생.
 function computePositions(seatsInOrder, buttonSeatId) {
-  const n = seatsInOrder.length;
-  const playing = seatsInOrder.filter(isPlaying);
   const result = { positions: {}, dead: { button: false, small: false } };
+
+  // 점유 자리(사람이 앉음, 아웃 포함)만 물리 순서대로 추림
+  const occ = seatsInOrder.filter(isOccupied);
+  const playing = occ.filter(s => !s.out);
   if (playing.length < 2) return result;
 
-  const btnIdx = seatsInOrder.findIndex(s => s.id === buttonSeatId);
-  if (btnIdx === -1) return result;
+  // 버튼이 점유 자리 배열에서 어디인지
+  let btnPos = occ.findIndex(s => s.id === buttonSeatId);
+  if (btnPos === -1) return result;
+  const m = occ.length;
 
-  // 헤즈업: 버튼=D(SB 겸), 다음 playing=BB
+  // 점유 배열 기준 다음 인덱스
+  const nextIdx = (i) => (i + 1) % m;
+
+  // 헤즈업: playing 2명. 버튼이 아웃이면 비표준이지만 다음 playing을 D로.
   if (playing.length === 2) {
-    let dIdx = btnIdx;
-    if (!isPlaying(seatsInOrder[btnIdx])) dIdx = nextPlayingIdx(seatsInOrder, btnIdx);
-    const bbIdx = nextPlayingIdx(seatsInOrder, dIdx);
-    result.positions[seatsInOrder[dIdx].id] = "D";
-    result.positions[seatsInOrder[bbIdx].id] = "BB";
+    // 버튼 자리부터 첫 playing = D, 그 다음 playing = BB
+    let i = btnPos;
+    while (occ[i].out) i = nextIdx(i);
+    const dSeat = occ[i];
+    let j = nextIdx(i);
+    while (occ[j].out || occ[j].id === dSeat.id) j = nextIdx(j);
+    result.positions[dSeat.id] = "D";
+    result.positions[occ[j].id] = "BB";
     return result;
   }
 
   // 3명 이상
-  if (!isPlaying(seatsInOrder[btnIdx])) result.dead.button = true;
+  // 버튼 자리가 아웃이면 데드버튼
+  if (occ[btnPos].out) result.dead.button = true;
 
-  const sbSeatIdx = (btnIdx + 1) % n;
-  let bbIdx;
-  if (isPlaying(seatsInOrder[sbSeatIdx])) {
-    result.positions[seatsInOrder[sbSeatIdx].id] = "SB";
-    bbIdx = nextPlayingIdx(seatsInOrder, sbSeatIdx);
+  // SB = 버튼 다음 점유 자리. 그 자리가 아웃이면 데드스몰.
+  const sbPos = nextIdx(btnPos);
+  let bbPos;
+  if (!occ[sbPos].out) {
+    result.positions[occ[sbPos].id] = "SB";
+    // BB = SB 다음 playing
+    let k = nextIdx(sbPos);
+    while (occ[k].out) k = nextIdx(k);
+    bbPos = k;
   } else {
     result.dead.small = true;
-    bbIdx = nextPlayingIdx(seatsInOrder, sbSeatIdx);
+    // BB = SB자리(아웃) 다음 playing
+    let k = nextIdx(sbPos);
+    while (occ[k].out) k = nextIdx(k);
+    bbPos = k;
   }
-  result.positions[seatsInOrder[bbIdx].id] = "BB";
+  result.positions[occ[bbPos].id] = "BB";
 
-  if (isPlaying(seatsInOrder[btnIdx])) {
-    result.positions[seatsInOrder[btnIdx].id] = "D";
-  }
+  // 버튼 자리에 사람 있으면(아웃 아님) D
+  if (!occ[btnPos].out) result.positions[occ[btnPos].id] = "D";
 
   // BB 다음 playing부터 UTG, UTG+1, ... CO 순 배정.
-  // 아직 포지션 못 받은 자리 수 = playing - 배정된 수.
-  // 데드(스몰/버튼)로 D나 SB가 빠지면 early가 그만큼 더 필요하므로,
-  // "필요한 개수+3"명 기준 풀의 early 목록(UTG..CO)을 사용해 표준 명칭을 맞춤.
   const assignedCount = Object.keys(result.positions).length;
   const remaining = playing.length - assignedCount;
   if (remaining > 0) {
     const refCount = Math.min(remaining + 3, 9);
     const refFull = FULL_BY_COUNT[refCount] || FULL_BY_COUNT[9];
     const earlyAll = refFull.filter(p => p !== "D" && p !== "SB" && p !== "BB");
-    // earlyAll 길이가 remaining보다 길 수 있으니 앞에서 remaining개 (UTG부터)
     const earlyPositions = earlyAll.slice(0, remaining);
-    let cur = bbIdx;
+    let cur = bbPos;
     for (let i = 0; i < earlyPositions.length; i++) {
-      cur = nextPlayingIdx(seatsInOrder, cur);
-      while (cur !== -1 && result.positions[seatsInOrder[cur].id]) {
-        cur = nextPlayingIdx(seatsInOrder, cur);
-      }
-      if (cur === -1) break;
-      result.positions[seatsInOrder[cur].id] = earlyPositions[i];
+      cur = nextIdx(cur);
+      while (occ[cur].out || result.positions[occ[cur].id]) cur = nextIdx(cur);
+      result.positions[occ[cur].id] = earlyPositions[i];
     }
   }
 
   return result;
 }
 
-// 버튼을 다음 물리 자리로 한 칸 전진 (사람 유무 무관 = 데드 발생의 핵심)
+// 자리에 사람이 앉아있는지 (아웃이어도 점유 상태로 봄 = 데드버튼/데드스몰 표현)
+function isOccupied(s) {
+  return !!(s && s.active && s.name);
+}
+
+// 버튼을 다음 "사람 앉은" 자리로 전진.
+// 빈 시트(active=false 또는 이름없음)는 건너뜀.
+// 아웃 자리는 점유 상태라 버튼이 거기 멈춤 → 데드버튼/데드스몰 발생.
 function advanceButton(seatsInOrder, buttonSeatId) {
   const n = seatsInOrder.length;
   const btnIdx = seatsInOrder.findIndex(s => s.id === buttonSeatId);
   if (btnIdx === -1) return buttonSeatId;
-  return seatsInOrder[(btnIdx + 1) % n].id;
+  for (let k = 1; k <= n; k++) {
+    const idx = (btnIdx + k) % n;
+    if (isOccupied(seatsInOrder[idx])) return seatsInOrder[idx].id;
+  }
+  return buttonSeatId;
 }
 
 // ── 액션 계산 순수 헬퍼 (hand 객체 + 스트리트 인덱스 기반) ──────────────────
@@ -389,7 +396,7 @@ function ActionBadge({ actionId, size = "sm" }) {
       padding: size === "sm" ? "1px 6px" : "3px 9px",
       borderRadius: 4,
       letterSpacing: 1,
-      fontFamily: "'Courier New', monospace",
+      fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
     }}>{a.label}</span>
   );
 }
@@ -415,7 +422,7 @@ function CardChip({ card, size = "sm" }) {
         display: "inline-flex",
         alignItems: "center", justifyContent: "center",
         color: "#0f172a",
-        fontFamily: "'Georgia', serif",
+        fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
         fontWeight: 900,
         fontSize: size === "sm" ? 15 : 22,
         lineHeight: 1,
@@ -434,7 +441,7 @@ function CardChip({ card, size = "sm" }) {
       color: suit.color === "#f87171" ? "#dc2626"
            : suit.color === "#fbbf24" ? "#2563eb"
            : suit.color === "#86efac" ? "#16a34a" : "#0f172a",
-      fontFamily: "'Georgia', serif",
+      fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
       fontWeight: 900,
       lineHeight: 1,
       gap: 1,
@@ -570,7 +577,7 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
                   borderRadius: 8,
                   display: "flex", alignItems: "center", justifyContent: "center",
                   color: "#0f172a",
-                  fontFamily: "'Georgia', serif",
+                  fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
                   fontWeight: 900,
                   fontSize: 42,
                   cursor: "pointer",
@@ -607,7 +614,7 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
                   color: isInPicks ? "#000" : "#0f172a",
                   fontWeight: 900,
                   fontSize: 24,
-                  fontFamily: "'Georgia', serif",
+                  fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
                   cursor: "pointer",
                   transition: "all .1s",
                   display: "flex", alignItems: "center", justifyContent: "center",
@@ -617,7 +624,7 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
                 <span style={{
                   position: "absolute", top: 2, left: 4,
                   fontSize: 9, color: isInPicks ? "#000" : "#94a3b8",
-                  opacity: .6, fontWeight: 700, fontFamily: "monospace",
+                  opacity: .6, fontWeight: 700, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
                 }}>{RANK_KEYS[gi].toUpperCase()}</span>
                 {rank}
               </button>
@@ -639,13 +646,13 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
           <button onClick={clearAll} style={{
             padding: "12px 16px",
             background: "#0a1628", border: "1px solid #1a2d45",
-            borderRadius: 8, color: "#475569",
+            borderRadius: 8, color: "#7e8ca0",
             fontSize: 11, cursor: "pointer",
           }}>비우기</button>
           <button onClick={onClose} style={{
             padding: "12px 16px",
             background: "transparent", border: "1px solid #1a2d45",
-            borderRadius: 8, color: "#475569",
+            borderRadius: 8, color: "#7e8ca0",
             fontSize: 11, cursor: "pointer",
           }}>취소</button>
         </div>
@@ -701,7 +708,7 @@ function HandHistoryCard({ hand }) {
             textAlign: "left",
           }}
         >
-          <span style={{ color: "#10b981", fontSize: 13, fontWeight: 900, fontFamily: "monospace" }}>
+          <span style={{ color: "#10b981", fontSize: 13, fontWeight: 900, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace" }}>
             HAND #{hand.number}
           </span>
           {hand.winnerName && (
@@ -722,7 +729,7 @@ function HandHistoryCard({ hand }) {
             color: copied ? "#000" : "#94a3b8",
             fontSize: 10, fontWeight: 700,
             letterSpacing: 1, cursor: "pointer",
-            fontFamily: "'Courier New',monospace",
+            fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
           }}>{copied ? "✓ 복사됨" : "📋 복사"}</button>
           <span style={{ color: "#374151", fontSize: 10 }}>{hand.startedAt}</span>
           <button onClick={() => setOpen(v => !v)} style={{
@@ -735,12 +742,12 @@ function HandHistoryCard({ hand }) {
       {open && (
         <div style={{
           padding: "12px 14px 14px",
-          fontFamily: "'Courier New', monospace",
+          fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
         }}>
           {/* 홀카드 표시 */}
           {Object.entries(hand.holeCards || {}).filter(([_, c]) => c[0] || c[1]).length > 0 && (
             <div style={{ marginBottom: 10 }}>
-              <span style={{ color: "#475569", fontSize: 10, letterSpacing: 2 }}>Cards: </span>
+              <span style={{ color: "#7e8ca0", fontSize: 10, letterSpacing: 2 }}>Cards: </span>
               {hand.seats.filter(s => hand.holeCards?.[s.id]?.[0] || hand.holeCards?.[s.id]?.[1]).map(s => (
                 <span key={s.id} style={{ marginRight: 10, display: "inline-flex", alignItems: "center", gap: 4 }}>
                   <span style={{ color: "#94a3b8", fontSize: 11 }}>{s.name}</span>
@@ -768,7 +775,7 @@ function HandHistoryCard({ hand }) {
             return (
               <div key={street} style={{ marginBottom: 8, lineHeight: 1.8 }}>
                 <span style={{
-                  color: "#475569", fontSize: 11, fontWeight: 700, letterSpacing: 2,
+                  color: "#7e8ca0", fontSize: 11, fontWeight: 700, letterSpacing: 2,
                 }}>
                   {STREET_SHORT[street]}:{" "}
                 </span>
@@ -793,7 +800,7 @@ function HandHistoryCard({ hand }) {
                           </>
                         )}
                         {cardsText ? (
-                          <span style={{ color: "#fbbf24", fontSize: 12, fontWeight: 900, fontFamily: "'Georgia',serif" }}>
+                          <span style={{ color: "#fbbf24", fontSize: 12, fontWeight: 900, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace" }}>
                             {cardsText}
                           </span>
                         ) : (
@@ -807,13 +814,13 @@ function HandHistoryCard({ hand }) {
                             border: "1px solid #ef444455",
                             fontSize: 9, fontWeight: 900,
                             padding: "1px 6px", borderRadius: 4,
-                            letterSpacing: 1, fontFamily: "'Courier New',monospace",
+                            letterSpacing: 1, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
                           }}>{label}</span>
                         ) : (
                           <ActionBadge actionId={e.action} size="sm" />
                         )}
                         {i < entries.length - 1 && (
-                          <span style={{ color: "#1e3a5f", margin: "0 4px" }}>/</span>
+                          <span style={{ color: "#536583", margin: "0 4px" }}>/</span>
                         )}
                       </span>
                     );
@@ -821,24 +828,24 @@ function HandHistoryCard({ hand }) {
                 })()}
                 {showAllFold && (
                   <span style={{
-                    background: "#475569" + "22",
+                    background: "#7e8ca0" + "22",
                     color: "#94a3b8",
-                    border: "1px solid #47556955",
+                    border: "1px solid #7e8ca055",
                     fontSize: 9, fontWeight: 900,
                     padding: "1px 6px", borderRadius: 4,
-                    letterSpacing: 1, fontFamily: "'Courier New',monospace",
+                    letterSpacing: 1, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
                   }}>ALL-FOLD</span>
                 )}
               </div>
             );
           })}
           <div style={{
-            borderTop: "1px dashed #1e3a5f",
+            borderTop: "1px dashed #536583",
             marginTop: 8, paddingTop: 8,
-            color: "#475569", fontSize: 10, letterSpacing: 2,
+            color: "#7e8ca0", fontSize: 10, letterSpacing: 2,
           }}>{"=".repeat(28)}</div>
           <div style={{ marginTop: 6 }}>
-            <span style={{ color: "#475569", fontSize: 11, letterSpacing: 2 }}>Winner: </span>
+            <span style={{ color: "#7e8ca0", fontSize: 11, letterSpacing: 2 }}>Winner: </span>
             <span style={{ color: "#f59e0b", fontSize: 13, fontWeight: 900 }}>
               {hand.winnerName || "—"}
             </span>
@@ -900,7 +907,7 @@ function RecapModal({ hand, onClose }) {
           maxWidth: 440, width: "100%",
           maxHeight: "85vh", overflow: "auto",
           boxShadow: "0 0 40px rgba(245,158,11,.2)",
-          fontFamily: "'Courier New', monospace",
+          fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
           color: "#e2e8f0",
         }}
       >
@@ -923,7 +930,7 @@ function RecapModal({ hand, onClose }) {
           </div>
           <button onClick={onClose} style={{
             background: "transparent", border: "none",
-            color: "#475569", fontSize: 18, cursor: "pointer", padding: 0,
+            color: "#7e8ca0", fontSize: 18, cursor: "pointer", padding: 0,
             width: 28, height: 28,
           }}>✕</button>
         </div>
@@ -952,7 +959,7 @@ function RecapModal({ hand, onClose }) {
             return (
               <div key={street} style={{ marginBottom: 8, lineHeight: 1.8 }}>
                 <span style={{
-                  color: "#475569", fontSize: 11, fontWeight: 700, letterSpacing: 2,
+                  color: "#7e8ca0", fontSize: 11, fontWeight: 700, letterSpacing: 2,
                 }}>
                   {STREET_SHORT[street]}:{" "}
                 </span>
@@ -973,7 +980,7 @@ function RecapModal({ hand, onClose }) {
                           </>
                         )}
                         {cardsText ? (
-                          <span style={{ color: "#fbbf24", fontSize: 12, fontWeight: 900, fontFamily: "'Georgia',serif" }}>
+                          <span style={{ color: "#fbbf24", fontSize: 12, fontWeight: 900, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace" }}>
                             {cardsText}
                           </span>
                         ) : (
@@ -993,7 +1000,7 @@ function RecapModal({ hand, onClose }) {
                           <ActionBadge actionId={e.action} size="sm" />
                         )}
                         {i < entries.length - 1 && (
-                          <span style={{ color: "#1e3a5f", margin: "0 4px" }}>/</span>
+                          <span style={{ color: "#536583", margin: "0 4px" }}>/</span>
                         )}
                       </span>
                     );
@@ -1001,9 +1008,9 @@ function RecapModal({ hand, onClose }) {
                 })()}
                 {showAllFold && (
                   <span style={{
-                    background: "#475569" + "22",
+                    background: "#7e8ca0" + "22",
                     color: "#94a3b8",
-                    border: "1px solid #47556955",
+                    border: "1px solid #7e8ca055",
                     fontSize: 9, fontWeight: 900,
                     padding: "1px 6px", borderRadius: 4,
                     letterSpacing: 1,
@@ -1013,12 +1020,12 @@ function RecapModal({ hand, onClose }) {
             );
           })}
           <div style={{
-            borderTop: "1px dashed #1e3a5f",
+            borderTop: "1px dashed #536583",
             marginTop: 10, paddingTop: 8,
-            color: "#475569", fontSize: 10, letterSpacing: 2,
+            color: "#7e8ca0", fontSize: 10, letterSpacing: 2,
           }}>{"=".repeat(28)}</div>
           <div style={{ marginTop: 6 }}>
-            <span style={{ color: "#475569", fontSize: 11, letterSpacing: 2 }}>Winner: </span>
+            <span style={{ color: "#7e8ca0", fontSize: 11, letterSpacing: 2 }}>Winner: </span>
             <span style={{ color: "#f59e0b", fontSize: 14, fontWeight: 900 }}>
               {hand.winnerName}
             </span>
@@ -1035,7 +1042,7 @@ function RecapModal({ hand, onClose }) {
             color: copied ? "#000" : "#94a3b8",
             fontSize: 12, fontWeight: 900,
             letterSpacing: 1.5, cursor: "pointer",
-            fontFamily: "'Courier New',monospace",
+            fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
             transition: "all .15s",
           }}>{copied ? "✓ 복사됨!" : "📋 복사"}</button>
           <button onClick={onClose} style={{
@@ -1104,9 +1111,11 @@ export default function App() {
   const startHand = () => {
     if (playingSeats.length < 2) return;
 
-    // 버튼 위치 결정: 지정 안 됐으면 첫 playing 시트를 버튼으로
+    // 버튼 위치 결정: 점유된 자리(사람 앉음)를 가리켜야 유효.
+    // 비점유(빈 시트)거나 미지정이면 첫 playing 시트로 폴백.
     let btn = buttonSeatId;
-    const btnValid = btn != null && seats.some(s => s.id === btn);
+    const btnSeat = seats.find(s => s.id === btn);
+    const btnValid = btn != null && isOccupied(btnSeat);
     if (!btnValid) {
       btn = playingSeats[0].id;
       setButtonSeatId(btn);
@@ -1510,7 +1519,7 @@ export default function App() {
     <div style={{
       minHeight: "100vh",
       background: "#020912",
-      fontFamily: "'Courier New', monospace",
+      fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
       color: "#e2e8f0",
     }}>
 
@@ -1541,7 +1550,7 @@ export default function App() {
               padding: "4px 12px",
               background: activeView === v ? "#10b981" : "transparent",
               border: `1px solid ${activeView === v ? "#10b981" : "#1a2d45"}`,
-              borderRadius: 5, color: activeView === v ? "#000" : "#475569",
+              borderRadius: 5, color: activeView === v ? "#000" : "#7e8ca0",
               fontSize: 10, fontWeight: 700, cursor: "pointer", letterSpacing: 1,
             }}>{v.toUpperCase()}</button>
           ))}
@@ -1653,7 +1662,7 @@ export default function App() {
                             : actionColor ? actionColor
                             : seat.active ? "#10b981" : "#1a2d3f"
                         }`,
-                        color: seat.active ? "#e2e8f0" : "#2a4060",
+                        color: seat.active ? "#e2e8f0" : "#536583",
                         cursor: isHandActive ? "default" : "pointer",
                         display: "flex", flexDirection: "column",
                         alignItems: "center", justifyContent: "center",
@@ -1663,7 +1672,7 @@ export default function App() {
                           : seat.active && !seat.out ? "0 0 8px rgba(16,185,129,.2)" : "none",
                       }}
                     >
-                      <span style={{ fontSize: 8, color: seat.out ? "#f87171" : seat.active ? "#10b981" : "#1e3a5f", letterSpacing: .5 }}>
+                      <span style={{ fontSize: 8, color: seat.out ? "#f87171" : seat.active ? "#10b981" : "#536583", letterSpacing: .5 }}>
                         {seat.out ? "OUT" : seat.position ? posLabel(seat.position) : (i + 1)}
                       </span>
                       <span style={{ fontSize: seat.name ? 9 : 14, fontWeight: seat.name ? 700 : 400 }}>
@@ -1712,7 +1721,7 @@ export default function App() {
               background: "#050d1a", border: "1px solid #0f1f35",
               borderRadius: 12, padding: 14, marginBottom: 12,
             }}>
-              <div style={{ color: "#475569", fontSize: 9, marginBottom: 10, letterSpacing: 2 }}>
+              <div style={{ color: "#7e8ca0", fontSize: 9, marginBottom: 10, letterSpacing: 2 }}>
                 SEAT {editingSeat + 1}
               </div>
               <input
@@ -1725,13 +1734,13 @@ export default function App() {
                   border: "1px solid #1a2d45", borderRadius: 8,
                   padding: "8px 12px", color: "#e2e8f0",
                   fontSize: 13, outline: "none", boxSizing: "border-box",
-                  fontFamily: "inherit",
+                  fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
                 }}
               />
 
               {/* 포지션 선택 */}
               <div style={{
-                color: "#475569", fontSize: 9, marginTop: 12, marginBottom: 6, letterSpacing: 2,
+                color: "#7e8ca0", fontSize: 9, marginTop: 12, marginBottom: 6, letterSpacing: 2,
               }}>POSITION</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
                 {POSITION_ORDER.map(p => {
@@ -1810,13 +1819,13 @@ export default function App() {
                 }} style={{
                   padding: "9px 14px",
                   background: "#0a1628", border: "1px solid #1a2d45",
-                  borderRadius: 8, color: "#475569",
+                  borderRadius: 8, color: "#7e8ca0",
                   fontSize: 11, cursor: "pointer",
                 }}>비우기</button>
                 <button onClick={() => setEditingSeat(null)} style={{
                   padding: "9px 14px",
                   background: "transparent", border: "1px solid #1a2d45",
-                  borderRadius: 8, color: "#475569",
+                  borderRadius: 8, color: "#7e8ca0",
                   fontSize: 11, cursor: "pointer",
                 }}>취소</button>
               </div>
@@ -1836,7 +1845,7 @@ export default function App() {
                 letterSpacing: 2, marginBottom: 6, textAlign: "center",
               }}>🏆 WINNER 선택</div>
               <div style={{
-                color: "#475569", fontSize: 10, marginBottom: 12, textAlign: "center",
+                color: "#7e8ca0", fontSize: 10, marginBottom: 12, textAlign: "center",
               }}>여러 명 선택 시 SPLIT(찹) 처리</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {getAlivePlayers(3).map(seat => {
@@ -1863,7 +1872,7 @@ export default function App() {
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                         <span style={{
                           width: 20, height: 20, borderRadius: 5,
-                          border: `2px solid ${isSel ? "#10b981" : "#475569"}`,
+                          border: `2px solid ${isSel ? "#10b981" : "#7e8ca0"}`,
                           background: isSel ? "#10b981" : "transparent",
                           color: "#000", fontSize: 12, fontWeight: 900,
                           display: "flex", alignItems: "center", justifyContent: "center",
@@ -1876,7 +1885,7 @@ export default function App() {
                         {cardsToText(currentHand.holeCards[seat.id]) && (
                           <span style={{
                             color: "#fbbf24", fontSize: 13, fontWeight: 900,
-                            fontFamily: "'Georgia',serif",
+                            fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
                           }}>{cardsToText(currentHand.holeCards[seat.id])}</span>
                         )}
                       </div>
@@ -1938,7 +1947,7 @@ export default function App() {
                     }`,
                     borderRadius: 6,
                     color: i === currentStreet ? "#000"
-                      : i < currentStreet ? "#10b981" : "#2a4060",
+                      : i < currentStreet ? "#10b981" : "#536583",
                     fontSize: 10, fontWeight: 700, letterSpacing: 1,
                   }}>{STREET_SHORT[s]}</div>
                 ))}
@@ -1946,7 +1955,7 @@ export default function App() {
                 <button onClick={undoLastAction} disabled={currentHand.streets[currentStreetName].length === 0} style={{
                   padding: "4px 10px",
                   background: "transparent", border: "1px solid #1a2d45",
-                  borderRadius: 6, color: "#475569",
+                  borderRadius: 6, color: "#7e8ca0",
                   fontSize: 10, cursor: "pointer",
                   opacity: currentHand.streets[currentStreetName].length === 0 ? .3 : 1,
                 }}>↶</button>
@@ -1998,7 +2007,7 @@ export default function App() {
                             </>
                           )}
                           {cardsText ? (
-                            <span style={{ color: "#fbbf24", fontWeight: 900, fontFamily: "'Georgia',serif" }}>
+                            <span style={{ color: "#fbbf24", fontWeight: 900, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace" }}>
                               {cardsText}
                             </span>
                           ) : (
@@ -2012,13 +2021,13 @@ export default function App() {
                               border: "1px solid #ef444455",
                               fontSize: 9, fontWeight: 900,
                               padding: "1px 6px", borderRadius: 4,
-                              letterSpacing: 1, fontFamily: "'Courier New',monospace",
+                              letterSpacing: 1, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
                             }}>{label}</span>
                           ) : (
                             <ActionBadge actionId={e.action} size="sm" />
                           )}
                           {i < entries.length - 1 && (
-                            <span style={{ color: "#1e3a5f", margin: "0 4px" }}>/</span>
+                            <span style={{ color: "#536583", margin: "0 4px" }}>/</span>
                           )}
                         </span>
                       );
@@ -2027,12 +2036,12 @@ export default function App() {
                     if (showAllFold) {
                       items.push(
                         <span key="all-fold" style={{
-                          background: "#475569" + "22",
+                          background: "#7e8ca0" + "22",
                           color: "#94a3b8",
-                          border: "1px solid #47556955",
+                          border: "1px solid #7e8ca055",
                           fontSize: 9, fontWeight: 900,
                           padding: "1px 6px", borderRadius: 4,
-                          letterSpacing: 1, fontFamily: "'Courier New',monospace",
+                          letterSpacing: 1, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
                         }}>ALL-FOLD</span>
                       );
                     }
@@ -2100,7 +2109,7 @@ export default function App() {
                           border: "1px solid #10b981",
                           fontSize: 11, color: posEditOpen ? "#000" : "#10b981",
                           padding: "2px 8px", borderRadius: 4, letterSpacing: 1,
-                          fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                          fontWeight: 700, cursor: "pointer", fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
                         }}
                         title="포지션 수정"
                       >{posLabel(nextPlayer.position)} ▾</button>
@@ -2134,10 +2143,10 @@ export default function App() {
                       )}
                       {currentStreet === 0 && !hasCardsForNext && (
                         <span style={{
-                          fontSize: 9, color: "#fbbf24",
-                          background: "#fbbf24" + "22",
-                          border: "1px solid #fbbf24",
-                          padding: "2px 7px", borderRadius: 4,
+                          fontSize: 9, color: "#fde68a",
+                          background: "#3a2e0a",
+                          border: "1px solid #eab308",
+                          padding: "3px 7px", borderRadius: 4,
                           letterSpacing: 1, fontWeight: 700,
                           width: "100%",
                           textAlign: "center", marginTop: 6,
@@ -2147,7 +2156,7 @@ export default function App() {
                         <span style={{
                           marginLeft: "auto",
                           color: "#fbbf24", fontSize: 16, fontWeight: 900,
-                          fontFamily: "'Georgia',serif",
+                          fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
                         }}>{cardsToText(holeCards)}</span>
                       )}
                     </div>
@@ -2172,7 +2181,7 @@ export default function App() {
                                 borderRadius: 6,
                                 color: isCur ? "#000" : "#94a3b8",
                                 fontSize: 10, fontWeight: 700, cursor: "pointer",
-                                letterSpacing: 1, fontFamily: "inherit",
+                                letterSpacing: 1, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
                               }}
                             >{posLabel(p)}</button>
                           );
@@ -2194,14 +2203,14 @@ export default function App() {
                             style={{
                               flex: "1 1 auto", minWidth: 70,
                               padding: "11px 12px",
-                              background: disabled ? "#070f1c" : action.color + "22",
-                              border: `1.5px solid ${disabled ? "#1a2d45" : action.color}`,
+                              background: disabled ? "#0a1424" : action.color + "22",
+                              border: `1.5px solid ${disabled ? "#2d3f5c" : action.color}`,
                               borderRadius: 8,
-                              color: disabled ? "#1a2d45" : action.color,
+                              color: disabled ? "#536583" : action.color,
                               fontSize: 12, fontWeight: 900,
                               cursor: disabled ? "not-allowed" : "pointer",
                               letterSpacing: 1,
-                              opacity: disabled ? .4 : 1,
+                              opacity: disabled ? .65 : 1,
                               transition: "all .1s",
                               position: "relative",
                             }}
@@ -2227,7 +2236,7 @@ export default function App() {
                 borderRadius: 8,
                 display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center",
               }}>
-                <span style={{ color: "#475569", fontSize: 9, letterSpacing: 2 }}>
+                <span style={{ color: "#7e8ca0", fontSize: 9, letterSpacing: 2 }}>
                   ALIVE
                 </span>
                 {getActionablePlayers().map(p => {
@@ -2240,7 +2249,7 @@ export default function App() {
                       <span style={{ color: "#10b981", fontSize: 9 }}>{posLabel(p.position)}</span>
                       <span style={{ color: "#94a3b8", fontWeight: 700 }}>{p.name}</span>
                       {cardsToText(hc) && (
-                        <span style={{ color: "#fbbf24", fontFamily: "'Georgia',serif", fontWeight: 900 }}>
+                        <span style={{ color: "#fbbf24", fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace", fontWeight: 900 }}>
                           {cardsToText(hc)}
                         </span>
                       )}
@@ -2298,7 +2307,7 @@ export default function App() {
                   : "#070f1c",
                 border: `1px solid ${playingSeats.length >= 2 ? "#10b981" : "#1a2d45"}`,
                 borderRadius: 12,
-                color: playingSeats.length >= 2 ? "#000" : "#2a4060",
+                color: playingSeats.length >= 2 ? "#000" : "#536583",
                 fontSize: 14, fontWeight: 900,
                 cursor: playingSeats.length >= 2 ? "pointer" : "not-allowed",
                 letterSpacing: 3,
@@ -2354,7 +2363,7 @@ export default function App() {
             display: "flex", alignItems: "center", justifyContent: "space-between",
             marginBottom: 14, gap: 8,
           }}>
-            <span style={{ color: "#475569", fontSize: 10, letterSpacing: 3 }}>
+            <span style={{ color: "#7e8ca0", fontSize: 10, letterSpacing: 3 }}>
               HAND HISTORY
             </span>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -2373,7 +2382,7 @@ export default function App() {
                       borderRadius: 6, padding: "3px 10px",
                       color: "#94a3b8", fontSize: 10, fontWeight: 700,
                       letterSpacing: 1, cursor: "pointer",
-                      fontFamily: "'Courier New',monospace",
+                      fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
                     }}
                   >📋 ALL</button>
                   <button
@@ -2387,7 +2396,7 @@ export default function App() {
                       borderRadius: 6, padding: "3px 10px",
                       color: "#dc2626", fontSize: 10, fontWeight: 700,
                       letterSpacing: 1, cursor: "pointer",
-                      fontFamily: "'Courier New',monospace",
+                      fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
                     }}
                   >🗑 전체삭제</button>
                 </>
