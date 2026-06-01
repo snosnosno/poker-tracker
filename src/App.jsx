@@ -121,6 +121,19 @@ function handToText(hand) {
   const lines = [];
   const isHeadsUp = (hand.seats?.length || 0) === 2;
 
+  // 같은 카드 표기를 2명 이상이 가지면, 그 seat들은 이름도 함께 표시(구분용)
+  const cardCount = {};
+  const holeCards = hand.holeCards || {};
+  Object.keys(holeCards).forEach(seatId => {
+    const ct = cardsToText(holeCards[seatId]);
+    if (ct) cardCount[ct] = (cardCount[ct] || 0) + 1;
+  });
+  const dupCardSeats = new Set();
+  Object.keys(holeCards).forEach(seatId => {
+    const ct = cardsToText(holeCards[seatId]);
+    if (ct && cardCount[ct] >= 2) dupCardSeats.add(Number(seatId));
+  });
+
   STREETS.forEach(street => {
     const rawEntries = hand.streets[street] || [];
     const isPreflop = street === "PREFLOP";
@@ -148,7 +161,12 @@ function handToText(hand) {
         if (cardsText) prefix += `${cardsText} `;
         else prefix += "(?) ";
       } else if (cardsText) {
-        prefix = `${cardsText} `;
+        // 같은 카드를 든 사람이 둘 이상이면 이름도 붙여 구분
+        if (dupCardSeats.has(e.seatId)) {
+          prefix = `${e.playerName} ${cardsText} `;
+        } else {
+          prefix = `${cardsText} `;
+        }
       } else {
         prefix = `${e.playerName} `;
       }
@@ -159,7 +177,7 @@ function handToText(hand) {
     lines.push(`${STREET_SHORT[street]}: ${parts.join(" / ")}`);
   });
 
-  lines.push("=".repeat(28));
+  lines.push("=".repeat(13));
   lines.push(`Winner: ${hand.winnerName || "—"}`);
 
   return lines.join("\n");
@@ -398,6 +416,95 @@ function ActionBadge({ actionId, size = "sm" }) {
       letterSpacing: 1,
       fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
     }}>{a.label}</span>
+  );
+}
+
+// 한 스트리트의 액션들을 칩으로 렌더 (누적 로그용). 라벨(Pre/Flop/..) 포함.
+function StreetActionsInline({ hand, streetIdx, dupCardSeats }) {
+  const street = STREETS[streetIdx];
+  const rawEntries = hand.streets[street] || [];
+  if (rawEntries.length === 0) return null;
+  const isPreflop = streetIdx === 0;
+  const isHeadsUp = hand.seats.length === 2;
+
+  let entries, showAllFold = false;
+  if (isPreflop) {
+    const r = processPreflopEntries(rawEntries, isHeadsUp);
+    entries = r.entries;
+    showAllFold = r.showAllFold;
+  } else {
+    entries = rawEntries;
+  }
+
+  const seenSeats = new Set();
+  const items = entries.map((e, i) => {
+    const cardsText = cardsToText(hand.holeCards?.[e.seatId]);
+    const isFirstForPlayer = !seenSeats.has(e.seatId);
+    seenSeats.add(e.seatId);
+    const label = getActionLabel(entries, i);
+    const isNBet = label && label.endsWith("-BET");
+    // 같은 핸드 둘 이상이면 이름 표시. 단 프리플랍 첫액션은 이미 이름이 있으니 제외.
+    const showName = dupCardSeats.has(e.seatId) && !(isPreflop && isFirstForPlayer);
+    return (
+      <span key={i} style={{ whiteSpace: "nowrap" }}>
+        {isPreflop && isFirstForPlayer && (
+          <>
+            <span style={{ color: "#10b981", fontWeight: 700 }}>{posLabel(e.position)}</span>{" "}
+            <span style={{ color: "#e2e8f0", fontWeight: 700 }}>{e.playerName}</span>{" "}
+          </>
+        )}
+        {cardsText ? (
+          <>
+            {showName && (
+              <span style={{ color: "#e2e8f0", fontWeight: 700 }}>{e.playerName} </span>
+            )}
+            <span style={{ color: "#fbbf24", fontWeight: 900, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace" }}>
+              {cardsText}
+            </span>
+          </>
+        ) : (
+          <span style={{ color: "#94a3b8" }}>{e.playerName}</span>
+        )}
+        {" "}
+        {isNBet ? (
+          <span style={{
+            background: "#ef4444" + "22", color: "#ef4444",
+            border: "1px solid #ef444455", fontSize: 9, fontWeight: 900,
+            padding: "1px 6px", borderRadius: 4, letterSpacing: 1,
+            fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+          }}>{label}</span>
+        ) : (
+          <ActionBadge actionId={e.action} size="sm" />
+        )}
+        {i < entries.length - 1 && (
+          <span style={{ color: "#536583", margin: "0 4px" }}>/</span>
+        )}
+      </span>
+    );
+  });
+
+  if (showAllFold) {
+    items.push(
+      <span key="all-fold" style={{
+        background: "#7e8ca0" + "22", color: "#94a3b8",
+        border: "1px solid #7e8ca055", fontSize: 9, fontWeight: 900,
+        padding: "1px 6px", borderRadius: 4, letterSpacing: 1,
+        fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+      }}>ALL-FOLD</span>
+    );
+  }
+
+  return (
+    <div style={{
+      display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center",
+      fontSize: 11, marginBottom: 4,
+    }}>
+      <span style={{
+        color: "#64748b", fontWeight: 700, fontSize: 9,
+        minWidth: 34, letterSpacing: 1,
+      }}>{STREET_SHORT[street]}</span>
+      {items}
+    </div>
   );
 }
 
@@ -843,7 +950,7 @@ function HandHistoryCard({ hand }) {
             borderTop: "1px dashed #536583",
             marginTop: 8, paddingTop: 8,
             color: "#7e8ca0", fontSize: 10, letterSpacing: 2,
-          }}>{"=".repeat(28)}</div>
+          }}>{"=".repeat(13)}</div>
           <div style={{ marginTop: 6 }}>
             <span style={{ color: "#7e8ca0", fontSize: 11, letterSpacing: 2 }}>Winner: </span>
             <span style={{ color: "#f59e0b", fontSize: 13, fontWeight: 900 }}>
@@ -859,7 +966,7 @@ function HandHistoryCard({ hand }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // 핸드 종료 리캡 모달
 // ══════════════════════════════════════════════════════════════════════════════
-function RecapModal({ hand, onClose }) {
+function RecapModal({ hand, onClose, onReopen }) {
   const [copied, setCopied] = useState(false);
 
   // 모달 닫을 때 copied 상태 리셋
@@ -1023,7 +1130,7 @@ function RecapModal({ hand, onClose }) {
             borderTop: "1px dashed #536583",
             marginTop: 10, paddingTop: 8,
             color: "#7e8ca0", fontSize: 10, letterSpacing: 2,
-          }}>{"=".repeat(28)}</div>
+          }}>{"=".repeat(13)}</div>
           <div style={{ marginTop: 6 }}>
             <span style={{ color: "#7e8ca0", fontSize: 11, letterSpacing: 2 }}>Winner: </span>
             <span style={{ color: "#f59e0b", fontSize: 14, fontWeight: 900 }}>
@@ -1033,6 +1140,21 @@ function RecapModal({ hand, onClose }) {
         </div>
 
         {/* 하단 버튼 */}
+        {onReopen && (() => {
+          let lastActed = 0;
+          for (let i = 0; i < STREETS.length; i++) {
+            if (hand.streets[STREETS[i]].length > 0) lastActed = i;
+          }
+          return (
+            <button onClick={onReopen} style={{
+              width: "100%", marginBottom: 8, padding: "10px",
+              background: "transparent", border: "1px solid #10b981",
+              borderRadius: 10, color: "#10b981",
+              fontSize: 11, fontWeight: 700, letterSpacing: 1, cursor: "pointer",
+              fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+            }}>↶ {STREET_SHORT[STREETS[lastActed]]} 로 되돌리기</button>
+          );
+        })()}
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={handleCopy} style={{
             flex: 1, padding: "12px",
@@ -1490,6 +1612,54 @@ export default function App() {
     setShowWinnerPicker(false);
   };
 
+  // ── 방금 종료한 핸드 되돌리기 (RecapModal에서) ─────────────────────────────
+  // hands[0]을 currentHand로 복원, 버튼은 그 핸드의 저장값으로 되돌림,
+  // 마지막 액션 스트리트의 액션을 비우고 그 스트리트 처음부터 재입력.
+  const reopenLastHand = () => {
+    if (hands.length === 0) return;
+    const last = hands[0];
+
+    // winner 관련 필드 제거하고 복원
+    const { winnerName, winnerNames, isSplit, winnerCards, winnerSeatId, autoWin, ...base } = last;
+
+    // 마지막 액션 스트리트 찾기
+    let lastActed = 0;
+    for (let i = 0; i < STREETS.length; i++) {
+      if (base.streets[STREETS[i]].length > 0) lastActed = i;
+    }
+    // 그 스트리트 + 이후 비움
+    const newStreets = { ...base.streets };
+    for (let i = lastActed; i < STREETS.length; i++) newStreets[STREETS[i]] = [];
+
+    if (base.buttonSeatId != null) setButtonSeatId(base.buttonSeatId);
+    setHands(prev => prev.slice(1));
+    setCurrentHand({ ...base, streets: newStreets });
+    setCurrentStreet(lastActed);
+    setShowWinnerPicker(false);
+    setSelectedWinners([]);
+    setRecapHand(null);
+  };
+
+  // ── 스트리트 되돌리기 ─────────────────────────────────────────────────────
+  // 지나간 스트리트를 눌러 그 시작 상태로 복귀. 해당 스트리트 + 이후 액션을 모두 비움.
+  // fromPicker=true(쇼다운 되돌리기)면 현재 스트리트로의 복귀도 허용.
+  const goToStreet = (targetIdx, fromPicker = false) => {
+    if (!currentHand) return;
+    if (!fromPicker && targetIdx >= currentStreet) return; // 진행 중 탭: 현재/미래 차단
+    if (targetIdx < 0 || targetIdx >= STREETS.length) return;
+    setCurrentHand(prev => {
+      if (!prev) return prev;
+      const newStreets = { ...prev.streets };
+      for (let i = targetIdx; i < STREETS.length; i++) {
+        newStreets[STREETS[i]] = [];
+      }
+      return { ...prev, streets: newStreets };
+    });
+    setCurrentStreet(targetIdx);
+    setShowWinnerPicker(false);
+    setSelectedWinners([]);
+  };
+
   // ── 시트 이름 저장 ───────────────────────────────────────────────────────
   const saveSeatName = () => {
     setSeats(prev => prev.map(s =>
@@ -1919,12 +2089,24 @@ export default function App() {
                   : `🏆 SPLIT 확정 (${selectedWinners.length}명)`}
               </button>
 
-              <button onClick={() => { discardHand(); setSelectedWinners([]); }} style={{
-                marginTop: 8, width: "100%", padding: "8px",
-                background: "transparent", border: "1px dashed #1a2d45",
-                borderRadius: 8, color: "#374151",
-                fontSize: 11, cursor: "pointer",
-              }}>✕ 위너 없이 종료</button>
+              {(() => {
+                // 실제 액션이 입력된 마지막 스트리트로 되돌리기.
+                // (자동 점프로 currentStreet가 RIVER여도, 턴에서 올인 끝났으면 턴으로)
+                let lastActed = -1;
+                for (let i = 0; i < STREETS.length; i++) {
+                  if (currentHand.streets[STREETS[i]].length > 0) lastActed = i;
+                }
+                if (lastActed < 0) return null;
+                return (
+                  <button onClick={() => goToStreet(lastActed, true)} style={{
+                    marginTop: 8, width: "100%", padding: "8px",
+                    background: "transparent", border: "1px solid #10b981",
+                    borderRadius: 8, color: "#10b981",
+                    fontSize: 11, fontWeight: 700, cursor: "pointer",
+                    fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                  }}>↶ {STREET_SHORT[STREETS[lastActed]]} 로 되돌리기</button>
+                );
+              })()}
             </div>
           )}
 
@@ -1936,21 +2118,30 @@ export default function App() {
             }}>
               {/* 스트리트 탭 */}
               <div style={{ display: "flex", gap: 5, marginBottom: 12, alignItems: "center" }}>
-                {STREETS.map((s, i) => (
-                  <div key={s} style={{
-                    padding: "4px 11px",
-                    background: i === currentStreet
-                      ? "#f59e0b" : i < currentStreet ? "#0a2e1e" : "#070f1c",
-                    border: `1px solid ${
-                      i === currentStreet ? "#f59e0b"
-                        : i < currentStreet ? "#10b981" : "#1a2d45"
-                    }`,
-                    borderRadius: 6,
-                    color: i === currentStreet ? "#000"
-                      : i < currentStreet ? "#10b981" : "#536583",
-                    fontSize: 10, fontWeight: 700, letterSpacing: 1,
-                  }}>{STREET_SHORT[s]}</div>
-                ))}
+                {STREETS.map((s, i) => {
+                  const isPast = i < currentStreet;
+                  return (
+                    <button key={s}
+                      onClick={() => isPast && goToStreet(i)}
+                      disabled={!isPast}
+                      title={isPast ? `${STREET_SHORT[s]} 시작으로 되돌리기` : undefined}
+                      style={{
+                        padding: "4px 11px",
+                        background: i === currentStreet
+                          ? "#f59e0b" : isPast ? "#0a2e1e" : "#070f1c",
+                        border: `1px solid ${
+                          i === currentStreet ? "#f59e0b"
+                            : isPast ? "#10b981" : "#1a2d45"
+                        }`,
+                        borderRadius: 6,
+                        color: i === currentStreet ? "#000"
+                          : isPast ? "#10b981" : "#536583",
+                        fontSize: 10, fontWeight: 700, letterSpacing: 1,
+                        cursor: isPast ? "pointer" : "default",
+                        fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                      }}>{STREET_SHORT[s]}</button>
+                  );
+                })}
                 <div style={{ flex: 1 }} />
                 <button onClick={undoLastAction} disabled={currentHand.streets[currentStreetName].length === 0} style={{
                   padding: "4px 10px",
@@ -1966,89 +2157,6 @@ export default function App() {
                   fontSize: 10, cursor: "pointer",
                 }}>✕</button>
               </div>
-
-              {/* 액션 로그 (현재 스트리트) */}
-              {currentHand.streets[currentStreetName].length > 0 && (
-                <div style={{
-                  background: "#020a14",
-                  border: "1px solid #0f1f35",
-                  borderRadius: 8, padding: "8px 10px",
-                  marginBottom: 12,
-                  display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center",
-                  fontSize: 11,
-                }}>
-                  {(() => {
-                    const rawEntries = currentHand.streets[currentStreetName];
-                    const isPreflop = currentStreet === 0;
-                    const isHeadsUp = currentHand.seats.length === 2;
-
-                    let entries, showAllFold = false;
-                    if (isPreflop) {
-                      const r = processPreflopEntries(rawEntries, isHeadsUp);
-                      entries = r.entries;
-                      showAllFold = r.showAllFold;
-                    } else {
-                      entries = rawEntries;
-                    }
-
-                    const seenSeats = new Set();
-                    const items = entries.map((e, i) => {
-                      const cardsText = cardsToText(currentHand.holeCards?.[e.seatId]);
-                      const isFirstForPlayer = !seenSeats.has(e.seatId);
-                      seenSeats.add(e.seatId);
-                      const label = getActionLabel(entries, i);
-                      const isNBet = label && label.endsWith("-BET");
-                      return (
-                        <span key={i} style={{ whiteSpace: "nowrap" }}>
-                          {isPreflop && isFirstForPlayer && (
-                            <>
-                              <span style={{ color: "#10b981", fontWeight: 700 }}>{posLabel(e.position)}</span>{" "}
-                              <span style={{ color: "#e2e8f0", fontWeight: 700 }}>{e.playerName}</span>{" "}
-                            </>
-                          )}
-                          {cardsText ? (
-                            <span style={{ color: "#fbbf24", fontWeight: 900, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace" }}>
-                              {cardsText}
-                            </span>
-                          ) : (
-                            <span style={{ color: "#94a3b8" }}>{e.playerName}</span>
-                          )}
-                          {" "}
-                          {isNBet ? (
-                            <span style={{
-                              background: "#ef4444" + "22",
-                              color: "#ef4444",
-                              border: "1px solid #ef444455",
-                              fontSize: 9, fontWeight: 900,
-                              padding: "1px 6px", borderRadius: 4,
-                              letterSpacing: 1, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
-                            }}>{label}</span>
-                          ) : (
-                            <ActionBadge actionId={e.action} size="sm" />
-                          )}
-                          {i < entries.length - 1 && (
-                            <span style={{ color: "#536583", margin: "0 4px" }}>/</span>
-                          )}
-                        </span>
-                      );
-                    });
-
-                    if (showAllFold) {
-                      items.push(
-                        <span key="all-fold" style={{
-                          background: "#7e8ca0" + "22",
-                          color: "#94a3b8",
-                          border: "1px solid #7e8ca055",
-                          fontSize: 9, fontWeight: 900,
-                          padding: "1px 6px", borderRadius: 4,
-                          letterSpacing: 1, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
-                        }}>ALL-FOLD</span>
-                      );
-                    }
-                    return items;
-                  })()}
-                </div>
-              )}
 
               {/* 현재 액션할 사람 (단일 카드) */}
               {(() => {
@@ -2224,6 +2332,35 @@ export default function App() {
                         );
                       })}
                     </div>
+                  </div>
+                );
+              })()}
+
+              {/* 누적 액션 로그 (Pre부터 현재까지 전체) */}
+              {(() => {
+                const hasAny = STREETS.some(s => (currentHand.streets[s] || []).length > 0);
+                if (!hasAny) return null;
+                // 같은 카드 2명+ 이면 이름 표시 (로그와 동일 규칙)
+                const holeCards = currentHand.holeCards || {};
+                const cardCount = {};
+                Object.keys(holeCards).forEach(id => {
+                  const ct = cardsToText(holeCards[id]);
+                  if (ct) cardCount[ct] = (cardCount[ct] || 0) + 1;
+                });
+                const dupCardSeats = new Set();
+                Object.keys(holeCards).forEach(id => {
+                  const ct = cardsToText(holeCards[id]);
+                  if (ct && cardCount[ct] >= 2) dupCardSeats.add(Number(id));
+                });
+                return (
+                  <div style={{
+                    marginTop: 12, padding: "8px 10px",
+                    background: "#020a14", border: "1px solid #0f1f35",
+                    borderRadius: 8,
+                  }}>
+                    {STREETS.map((s, idx) => (
+                      <StreetActionsInline key={s} hand={currentHand} streetIdx={idx} dupCardSeats={dupCardSeats} />
+                    ))}
                   </div>
                 );
               })()}
@@ -2436,6 +2573,7 @@ export default function App() {
       <RecapModal
         hand={recapHand}
         onClose={() => setRecapHand(null)}
+        onReopen={reopenLastHand}
       />
 
       <style>{`
