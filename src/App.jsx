@@ -67,6 +67,32 @@ const clampCardCount = (n) => {
   return Math.min(MAX_CARD_COUNT, Math.max(MIN_CARD_COUNT, v));
 };
 
+// 베팅 금액 입력 대상 액션 (사이징)
+const AMOUNT_ACTIONS = new Set(["open", "bet", "raise", "allin"]);
+
+// 숫자 입력 + 단위(없음/k/m)로 표시 문자열 생성. 무효/빈값이면 null.
+// 예) ("23.5","k")→"23.5k", ("23500","")→"23500", ("1","m")→"1m", ("100","")→"100"
+function makeAmountText(numStr, unit) {
+  if (numStr == null) return null;
+  const s = String(numStr).trim();
+  if (!s || !/^\d+(\.\d+)?$/.test(s)) return null;
+  if (!(parseFloat(s) > 0)) return null;
+  const suffix = unit === "k" ? "k" : unit === "m" ? "m" : "";
+  return s + suffix;
+}
+
+// 표시 문자열 → 숫자값 (향후 팟 계산용). 무효면 null.
+function parseAmountText(text) {
+  if (!text) return null;
+  const m = String(text).trim().toLowerCase().match(/^(\d+(?:\.\d+)?)([km]?)$/);
+  if (!m) return null;
+  const mult = m[2] === "k" ? 1e3 : m[2] === "m" ? 1e6 : 1;
+  return parseFloat(m[1]) * mult;
+}
+
+// 공통 모노스페이스 폰트 스택 (카드/포지션/금액 등 고정폭 표기)
+const MONO = "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace";
+
 const SUITS = [
   { id: "s", label: "♠", color: "#e2e8f0" },
   { id: "h", label: "♥", color: "#f87171" },
@@ -85,6 +111,22 @@ function cardsToText(cards) {
   // 랭크 강도로 정렬 (높은 것 먼저)
   const sorted = [...valid].sort((a, b) => (RANK_VALUE[b[0]] || 0) - (RANK_VALUE[a[0]] || 0));
   return sorted.map(c => c[0]).join("");
+}
+
+// 같은 카드 표기(cardsToText)를 2명 이상이 가진 seat들의 Set (로그에서 이름 병기 구분용)
+function computeDupCardSeats(hand) {
+  const holeCards = hand?.holeCards || {};
+  const count = {};
+  Object.keys(holeCards).forEach(id => {
+    const ct = cardsToText(holeCards[id]);
+    if (ct) count[ct] = (count[ct] || 0) + 1;
+  });
+  const dup = new Set();
+  Object.keys(holeCards).forEach(id => {
+    const ct = cardsToText(holeCards[id]);
+    if (ct && count[ct] >= 2) dup.add(Number(id));
+  });
+  return dup;
 }
 
 // raise 액션을 RAISE/3-BET/4-BET... 로 변환
@@ -140,17 +182,7 @@ function handToText(hand) {
   const isHeadsUp = (hand.seats?.length || 0) === 2;
 
   // 같은 카드 표기를 2명 이상이 가지면, 그 seat들은 이름도 함께 표시(구분용)
-  const cardCount = {};
-  const holeCards = hand.holeCards || {};
-  Object.keys(holeCards).forEach(seatId => {
-    const ct = cardsToText(holeCards[seatId]);
-    if (ct) cardCount[ct] = (cardCount[ct] || 0) + 1;
-  });
-  const dupCardSeats = new Set();
-  Object.keys(holeCards).forEach(seatId => {
-    const ct = cardsToText(holeCards[seatId]);
-    if (ct && cardCount[ct] >= 2) dupCardSeats.add(Number(seatId));
-  });
+  const dupCardSeats = computeDupCardSeats(hand);
 
   STREETS.forEach(street => {
     const rawEntries = hand.streets[street] || [];
@@ -188,7 +220,7 @@ function handToText(hand) {
       } else {
         prefix = `${e.playerName} `;
       }
-      parts.push(`${prefix}${label}`);
+      parts.push(`${prefix}${label}${e.amountText ? " " + e.amountText : ""}`);
     });
     if (showAllFold) parts.push("ALL-FOLD");
 
@@ -433,8 +465,72 @@ function ActionBadge({ actionId, size = "sm" }) {
       padding: size === "sm" ? "1px 6px" : "3px 9px",
       borderRadius: 4,
       letterSpacing: 1,
-      fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+      fontFamily: MONO,
     }}>{a.label}</span>
+  );
+}
+
+// 베팅 금액 칩 (액션 뱃지 뒤에 붙음)
+function AmountChip({ text, size = "sm" }) {
+  if (!text) return null;
+  return (
+    <span style={{
+      marginLeft: 4,
+      color: "#cbd5e1",
+      fontSize: size === "sm" ? 10 : 12,
+      fontWeight: 900,
+      fontFamily: MONO,
+    }}>{text}</span>
+  );
+}
+
+// 액션 로그 한 항목 (포지션/이름/카드 + 라벨/N-BET + 금액 + 구분자). 3곳 공용.
+// size: "sm"(라이브 로그) | "md"(히스토리/리캡)
+function ActionEntry({ hand, entries, i, isPreflop, isFirstForPlayer, dupCardSeats, size = "sm" }) {
+  const e = entries[i];
+  const cardsText = cardsToText(hand.holeCards?.[e.seatId]);
+  const label = getActionLabel(entries, i);
+  const isNBet = label && label.endsWith("-BET");
+  // 같은 카드 표기 2명+ 이면 이름 병기. 단 프리플랍 첫 액션은 이미 이름 있음.
+  const showName = dupCardSeats?.has(e.seatId) && !(isPreflop && isFirstForPlayer);
+  const nameSize = size === "md" ? 12 : 11;
+  const cardsSize = size === "md" ? 12 : 11;
+  const wrapStyle = size === "md"
+    ? { marginRight: 6, whiteSpace: "nowrap" }
+    : { whiteSpace: "nowrap" };
+  return (
+    <span style={wrapStyle}>
+      {isPreflop && isFirstForPlayer && (
+        <>
+          <span style={{ color: "#10b981", fontSize: 11, fontWeight: 700 }}>{posLabel(e.position)}</span>{" "}
+          <span style={{ color: "#e2e8f0", fontSize: nameSize, fontWeight: 700 }}>{e.playerName}</span>{" "}
+        </>
+      )}
+      {cardsText ? (
+        <>
+          {showName && (
+            <span style={{ color: "#e2e8f0", fontSize: nameSize, fontWeight: 700 }}>{e.playerName} </span>
+          )}
+          <span style={{ color: "#fbbf24", fontSize: cardsSize, fontWeight: 900, fontFamily: MONO }}>{cardsText}</span>
+        </>
+      ) : (
+        <span style={{ color: "#94a3b8", fontSize: 11 }}>{e.playerName}</span>
+      )}
+      {" "}
+      {isNBet ? (
+        <span style={{
+          background: "#ef4444" + "22", color: "#ef4444",
+          border: "1px solid #ef444455", fontSize: 9, fontWeight: 900,
+          padding: "1px 6px", borderRadius: 4, letterSpacing: 1, fontFamily: MONO,
+        }}>{label}</span>
+      ) : (
+        <ActionBadge actionId={e.action} size="sm" />
+      )}
+      {e.amountText && <AmountChip text={e.amountText} size="sm" />}
+      {i < entries.length - 1 && (
+        <span style={{ color: "#536583", margin: "0 4px" }}>/</span>
+      )}
+    </span>
   );
 }
 
@@ -457,48 +553,15 @@ function StreetActionsInline({ hand, streetIdx, dupCardSeats }) {
 
   const seenSeats = new Set();
   const items = entries.map((e, i) => {
-    const cardsText = cardsToText(hand.holeCards?.[e.seatId]);
     const isFirstForPlayer = !seenSeats.has(e.seatId);
     seenSeats.add(e.seatId);
-    const label = getActionLabel(entries, i);
-    const isNBet = label && label.endsWith("-BET");
-    // 같은 핸드 둘 이상이면 이름 표시. 단 프리플랍 첫액션은 이미 이름이 있으니 제외.
-    const showName = dupCardSeats.has(e.seatId) && !(isPreflop && isFirstForPlayer);
     return (
-      <span key={i} style={{ whiteSpace: "nowrap" }}>
-        {isPreflop && isFirstForPlayer && (
-          <>
-            <span style={{ color: "#10b981", fontWeight: 700 }}>{posLabel(e.position)}</span>{" "}
-            <span style={{ color: "#e2e8f0", fontWeight: 700 }}>{e.playerName}</span>{" "}
-          </>
-        )}
-        {cardsText ? (
-          <>
-            {showName && (
-              <span style={{ color: "#e2e8f0", fontWeight: 700 }}>{e.playerName} </span>
-            )}
-            <span style={{ color: "#fbbf24", fontWeight: 900, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace" }}>
-              {cardsText}
-            </span>
-          </>
-        ) : (
-          <span style={{ color: "#94a3b8" }}>{e.playerName}</span>
-        )}
-        {" "}
-        {isNBet ? (
-          <span style={{
-            background: "#ef4444" + "22", color: "#ef4444",
-            border: "1px solid #ef444455", fontSize: 9, fontWeight: 900,
-            padding: "1px 6px", borderRadius: 4, letterSpacing: 1,
-            fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
-          }}>{label}</span>
-        ) : (
-          <ActionBadge actionId={e.action} size="sm" />
-        )}
-        {i < entries.length - 1 && (
-          <span style={{ color: "#536583", margin: "0 4px" }}>/</span>
-        )}
-      </span>
+      <ActionEntry
+        key={i}
+        hand={hand} entries={entries} i={i}
+        isPreflop={isPreflop} isFirstForPlayer={isFirstForPlayer}
+        dupCardSeats={dupCardSeats} size="sm"
+      />
     );
   });
 
@@ -508,7 +571,7 @@ function StreetActionsInline({ hand, streetIdx, dupCardSeats }) {
         background: "#7e8ca0" + "22", color: "#94a3b8",
         border: "1px solid #7e8ca055", fontSize: 9, fontWeight: 900,
         padding: "1px 6px", borderRadius: 4, letterSpacing: 1,
-        fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+        fontFamily: MONO,
       }}>ALL-FOLD</span>
     );
   }
@@ -548,7 +611,7 @@ function CardChip({ card, size = "sm" }) {
         display: "inline-flex",
         alignItems: "center", justifyContent: "center",
         color: "#0f172a",
-        fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+        fontFamily: MONO,
         fontWeight: 900,
         fontSize: size === "sm" ? 15 : 22,
         lineHeight: 1,
@@ -567,7 +630,7 @@ function CardChip({ card, size = "sm" }) {
       color: suit.color === "#f87171" ? "#dc2626"
            : suit.color === "#fbbf24" ? "#2563eb"
            : suit.color === "#86efac" ? "#16a34a" : "#0f172a",
-      fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+      fontFamily: MONO,
       fontWeight: 900,
       lineHeight: 1,
       gap: 1,
@@ -705,7 +768,7 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
                   borderRadius: 8,
                   display: "flex", alignItems: "center", justifyContent: "center",
                   color: "#0f172a",
-                  fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                  fontFamily: MONO,
                   fontWeight: 900,
                   fontSize: pvFont,
                   cursor: "pointer",
@@ -742,7 +805,7 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
                   color: isInPicks ? "#000" : "#0f172a",
                   fontWeight: 900,
                   fontSize: 24,
-                  fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                  fontFamily: MONO,
                   cursor: "pointer",
                   transition: "all .1s",
                   display: "flex", alignItems: "center", justifyContent: "center",
@@ -752,7 +815,7 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
                 <span style={{
                   position: "absolute", top: 2, left: 4,
                   fontSize: 9, color: isInPicks ? "#000" : "#94a3b8",
-                  opacity: .6, fontWeight: 700, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                  opacity: .6, fontWeight: 700, fontFamily: MONO,
                 }}>{RANK_KEYS[gi].toUpperCase()}</span>
                 {rank}
               </button>
@@ -769,7 +832,7 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
               color: "#cbd5e1",
               fontWeight: 900,
               fontSize: 24,
-              fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+              fontFamily: MONO,
               cursor: "pointer",
               transition: "all .1s",
               display: "flex", alignItems: "center", justifyContent: "center",
@@ -780,7 +843,7 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
             <span style={{
               position: "absolute", top: 2, left: 4,
               fontSize: 9, color: "#7e8ca0",
-              opacity: .8, fontWeight: 700, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+              opacity: .8, fontWeight: 700, fontFamily: MONO,
             }}>0</span>
             ?
           </button>
@@ -862,7 +925,7 @@ function HandHistoryCard({ hand }) {
             textAlign: "left",
           }}
         >
-          <span style={{ color: "#10b981", fontSize: 13, fontWeight: 900, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace" }}>
+          <span style={{ color: "#10b981", fontSize: 13, fontWeight: 900, fontFamily: MONO }}>
             HAND #{hand.number}
           </span>
           {hand.winnerName && (
@@ -883,7 +946,7 @@ function HandHistoryCard({ hand }) {
             color: copied ? "#000" : "#94a3b8",
             fontSize: 10, fontWeight: 700,
             letterSpacing: 1, cursor: "pointer",
-            fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+            fontFamily: MONO,
           }}>{copied ? "✓ 복사됨" : "📋 복사"}</button>
           <span style={{ color: "#374151", fontSize: 10 }}>{hand.startedAt}</span>
           <button onClick={() => setOpen(v => !v)} style={{
@@ -896,7 +959,7 @@ function HandHistoryCard({ hand }) {
       {open && (
         <div style={{
           padding: "12px 14px 14px",
-          fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+          fontFamily: MONO,
         }}>
           {/* 홀카드 표시 */}
           {Object.entries(hand.holeCards || {}).filter(([_, c]) => c.some(Boolean)).length > 0 && (
@@ -935,49 +998,18 @@ function HandHistoryCard({ hand }) {
                   {STREET_SHORT[street]}:{" "}
                 </span>
                 {(() => {
+                  const dupCardSeats = computeDupCardSeats(hand);
                   const seenSeats = new Set();
                   return entries.map((e, i) => {
-                    const cardsText = cardsToText(hand.holeCards?.[e.seatId]);
                     const isFirstForPlayer = !seenSeats.has(e.seatId);
                     seenSeats.add(e.seatId);
-                    const label = getActionLabel(entries, i);
-                    const isNBet = label && label.endsWith("-BET");
-
                     return (
-                      <span key={i} style={{ marginRight: 6, whiteSpace: "nowrap" }}>
-                        {/* 프리플랍 첫 액션만 포지션+이름 표시 */}
-                        {isPreflop && isFirstForPlayer && (
-                          <>
-                            <span style={{ color: "#10b981", fontSize: 11, fontWeight: 700 }}>{posLabel(e.position)}</span>
-                            {" "}
-                            <span style={{ color: "#e2e8f0", fontSize: 12, fontWeight: 700 }}>{e.playerName}</span>
-                            {" "}
-                          </>
-                        )}
-                        {cardsText ? (
-                          <span style={{ color: "#fbbf24", fontSize: 12, fontWeight: 900, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace" }}>
-                            {cardsText}
-                          </span>
-                        ) : (
-                          <span style={{ color: "#94a3b8", fontSize: 11 }}>{e.playerName}</span>
-                        )}
-                        {" "}
-                        {isNBet ? (
-                          <span style={{
-                            background: "#ef4444" + "22",
-                            color: "#ef4444",
-                            border: "1px solid #ef444455",
-                            fontSize: 9, fontWeight: 900,
-                            padding: "1px 6px", borderRadius: 4,
-                            letterSpacing: 1, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
-                          }}>{label}</span>
-                        ) : (
-                          <ActionBadge actionId={e.action} size="sm" />
-                        )}
-                        {i < entries.length - 1 && (
-                          <span style={{ color: "#536583", margin: "0 4px" }}>/</span>
-                        )}
-                      </span>
+                      <ActionEntry
+                        key={i}
+                        hand={hand} entries={entries} i={i}
+                        isPreflop={isPreflop} isFirstForPlayer={isFirstForPlayer}
+                        dupCardSeats={dupCardSeats} size="md"
+                      />
                     );
                   });
                 })()}
@@ -988,7 +1020,7 @@ function HandHistoryCard({ hand }) {
                     border: "1px solid #7e8ca055",
                     fontSize: 9, fontWeight: 900,
                     padding: "1px 6px", borderRadius: 4,
-                    letterSpacing: 1, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                    letterSpacing: 1, fontFamily: MONO,
                   }}>ALL-FOLD</span>
                 )}
               </div>
@@ -1062,7 +1094,7 @@ function RecapModal({ hand, onClose, onReopen }) {
           maxWidth: 440, width: "100%",
           maxHeight: "85vh", overflow: "auto",
           boxShadow: "0 0 40px rgba(245,158,11,.2)",
-          fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+          fontFamily: MONO,
           color: "#e2e8f0",
         }}
       >
@@ -1119,45 +1151,18 @@ function RecapModal({ hand, onClose, onReopen }) {
                   {STREET_SHORT[street]}:{" "}
                 </span>
                 {(() => {
+                  const dupCardSeats = computeDupCardSeats(hand);
                   const seenSeats = new Set();
                   return entries.map((e, i) => {
-                    const cardsText = cardsToText(hand.holeCards?.[e.seatId]);
                     const isFirstForPlayer = !seenSeats.has(e.seatId);
                     seenSeats.add(e.seatId);
-                    const label = getActionLabel(entries, i);
-                    const isNBet = label && label.endsWith("-BET");
                     return (
-                      <span key={i} style={{ marginRight: 6, whiteSpace: "nowrap" }}>
-                        {isPreflop && isFirstForPlayer && (
-                          <>
-                            <span style={{ color: "#10b981", fontSize: 11, fontWeight: 700 }}>{posLabel(e.position)}</span>{" "}
-                            <span style={{ color: "#e2e8f0", fontSize: 12, fontWeight: 700 }}>{e.playerName}</span>{" "}
-                          </>
-                        )}
-                        {cardsText ? (
-                          <span style={{ color: "#fbbf24", fontSize: 12, fontWeight: 900, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace" }}>
-                            {cardsText}
-                          </span>
-                        ) : (
-                          <span style={{ color: "#94a3b8", fontSize: 11 }}>{e.playerName}</span>
-                        )}
-                        {" "}
-                        {isNBet ? (
-                          <span style={{
-                            background: "#ef4444" + "22",
-                            color: "#ef4444",
-                            border: "1px solid #ef444455",
-                            fontSize: 9, fontWeight: 900,
-                            padding: "1px 6px", borderRadius: 4,
-                            letterSpacing: 1,
-                          }}>{label}</span>
-                        ) : (
-                          <ActionBadge actionId={e.action} size="sm" />
-                        )}
-                        {i < entries.length - 1 && (
-                          <span style={{ color: "#536583", margin: "0 4px" }}>/</span>
-                        )}
-                      </span>
+                      <ActionEntry
+                        key={i}
+                        hand={hand} entries={entries} i={i}
+                        isPreflop={isPreflop} isFirstForPlayer={isFirstForPlayer}
+                        dupCardSeats={dupCardSeats} size="md"
+                      />
                     );
                   });
                 })()}
@@ -1199,7 +1204,7 @@ function RecapModal({ hand, onClose, onReopen }) {
               background: "transparent", border: "1px solid #10b981",
               borderRadius: 10, color: "#10b981",
               fontSize: 11, fontWeight: 700, letterSpacing: 1, cursor: "pointer",
-              fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+              fontFamily: MONO,
             }}>↶ {STREET_SHORT[STREETS[lastActed]]} 로 되돌리기</button>
           );
         })()}
@@ -1212,7 +1217,7 @@ function RecapModal({ hand, onClose, onReopen }) {
             color: copied ? "#000" : "#94a3b8",
             fontSize: 12, fontWeight: 900,
             letterSpacing: 1.5, cursor: "pointer",
-            fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+            fontFamily: MONO,
             transition: "all .15s",
           }}>{copied ? "✓ 복사됨!" : "📋 복사"}</button>
           <button onClick={onClose} style={{
@@ -1258,6 +1263,13 @@ export default function App() {
   const [cardPickerFor, setCardPickerFor] = useState(null); // { seatId }
   const [recapHand, setRecapHand] = useState(null); // 방금 끝난 핸드를 모달로 보여줌
   const [holeCardCount, setHoleCardCount] = useState(() => clampCardCount(loadFromStorage("pt_cardcount", DEFAULT_CARD_COUNT)));
+  const [betAmountInput, setBetAmountInput] = useState(""); // 베팅 금액 숫자부분
+  const [betUnit, setBetUnit] = useState("k"); // "" | "k" | "m", 핸드마다 k로 리셋
+  // 키보드 핸들러(effect 클로저)에서 stale 없이 현재 금액을 읽기 위한 ref
+  const betAmountInputRef = React.useRef("");
+  const betUnitRef = React.useRef("");
+  betAmountInputRef.current = betAmountInput;
+  betUnitRef.current = betUnit;
 
   // hands 변경되면 localStorage에 자동 저장
   useEffect(() => {
@@ -1331,13 +1343,18 @@ export default function App() {
     });
     setCurrentStreet(0);
     setShowWinnerPicker(false);
+    // 새 핸드: 금액 입력 초기화 (단위는 k 기본, 직전 핸드의 m/없음 잔존 방지)
+    setBetAmountInput("");
+    setBetUnit("k");
   };
 
   // ── 액션 기록 ────────────────────────────────────────────────────────────
-  const logAction = (seatId, actionId) => {
+  const logAction = (seatId, actionId, amountText = null) => {
     if (!currentHand) return;
     const street = STREETS[currentStreet];
     const seat = currentHand.seats.find(s => s.id === seatId);
+    // 사이징 액션이고 금액이 있으면 기록
+    const amt = (AMOUNT_ACTIONS.has(actionId) && amountText) ? amountText : undefined;
 
     setCurrentHand(prev => {
       const updated = {
@@ -1346,7 +1363,7 @@ export default function App() {
           ...prev.streets,
           [street]: [
             ...prev.streets[street],
-            { seatId, playerName: seat.name, position: seat.position, action: actionId },
+            { seatId, playerName: seat.name, position: seat.position, action: actionId, amountText: amt },
           ],
         },
       };
@@ -1398,6 +1415,14 @@ export default function App() {
 
       return updated;
     });
+  };
+
+  // UI/단축키 공용: 사이징 액션이면 현재 금액 입력을 붙이고, 기록 후 숫자부분만 비움(단위 sticky)
+  const doAction = (seatId, actionId) => {
+    const amountText = AMOUNT_ACTIONS.has(actionId)
+      ? makeAmountText(betAmountInputRef.current, betUnitRef.current) : null;
+    logAction(seatId, actionId, amountText);
+    if (betAmountInputRef.current) setBetAmountInput("");
   };
 
   // ── 핸드 진행 중 포지션 수정 (RFID 화면과 어긋날 때 즉석 정정) ──────────────
@@ -1501,9 +1526,6 @@ export default function App() {
   // FLOP+: 직전 스트리트까지 FOLD 안 한 사람만
   // 추가로 ALL-IN한 사람은 더 이상 액션 불가
   const getActionablePlayers = () => computeActionablePlayers(currentHand, currentStreet);
-
-  // 액션 순서로 정렬
-  const sortedActionable = () => computeSortedActionable(currentHand, currentStreet);
 
   // ── 다음 액션할 플레이어 계산 ─────────────────────────────────────────────
   // 마지막 BET/RAISE/OPEN/ALL-IN 이후 아직 응답 안 한 사람들이 액션해야 함
@@ -1616,15 +1638,7 @@ export default function App() {
 
       // 핸드 진행 중
       if (currentHand) {
-        const nextPlayer = getNextToAct();
-        // 1~7 = 액션 (ACTIONS 순서: open bet raise call check fold allin)
-        if (nextPlayer && e.key >= "1" && e.key <= "7") {
-          const action = ACTIONS[parseInt(e.key, 10) - 1];
-          if (action && !isActionDisabled(action.id, nextPlayer)) {
-            logAction(nextPlayer.id, action.id);
-          }
-          return;
-        }
+        // 액션은 버튼 탭으로만 (숫자키는 금액 입력 전용 → 단축키 충돌 제거)
         // Enter = 다음 스트리트 (라운드 완료 시)
         if (key === "enter" && isRoundComplete()) {
           nextStreet();
@@ -1752,7 +1766,7 @@ export default function App() {
     <div style={{
       minHeight: "100vh",
       background: "#020912",
-      fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+      fontFamily: MONO,
       color: "#e2e8f0",
     }}>
 
@@ -1816,7 +1830,7 @@ export default function App() {
                     color: isSel ? "#000" : (cardCountLocked ? "#3a4a5e" : "#7e8ca0"),
                     fontSize: 11, fontWeight: 700,
                     cursor: cardCountLocked ? "not-allowed" : "pointer",
-                    fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                    fontFamily: MONO,
                     opacity: cardCountLocked && !isSel ? 0.5 : 1,
                   }}
                 >{opt.label}<span style={{ fontSize: 9, opacity: .6, marginLeft: 4 }}>{opt.count}</span></button>
@@ -1827,7 +1841,7 @@ export default function App() {
               <span style={{
                 padding: "5px 10px", background: "#10b981", borderRadius: 5,
                 color: "#000", fontSize: 11, fontWeight: 700,
-                fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                fontFamily: MONO,
               }}>{holeCardCount}장</span>
             )}
           </div>
@@ -2005,7 +2019,7 @@ export default function App() {
                   border: "1px solid #1a2d45", borderRadius: 8,
                   padding: "8px 12px", color: "#e2e8f0",
                   fontSize: 13, outline: "none", boxSizing: "border-box",
-                  fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                  fontFamily: MONO,
                 }}
               />
 
@@ -2156,7 +2170,7 @@ export default function App() {
                         {cardsToText(currentHand.holeCards[seat.id]) && (
                           <span style={{
                             color: "#fbbf24", fontSize: 13, fontWeight: 900,
-                            fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                            fontFamily: MONO,
                           }}>{cardsToText(currentHand.holeCards[seat.id])}</span>
                         )}
                       </div>
@@ -2204,7 +2218,7 @@ export default function App() {
                     background: "transparent", border: "1px solid #10b981",
                     borderRadius: 8, color: "#10b981",
                     fontSize: 11, fontWeight: 700, cursor: "pointer",
-                    fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                    fontFamily: MONO,
                   }}>↶ {STREET_SHORT[STREETS[lastActed]]} 로 되돌리기</button>
                 );
               })()}
@@ -2239,7 +2253,7 @@ export default function App() {
                           : isPast ? "#10b981" : "#536583",
                         fontSize: 10, fontWeight: 700, letterSpacing: 1,
                         cursor: isPast ? "pointer" : "default",
-                        fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                        fontFamily: MONO,
                       }}>{STREET_SHORT[s]}</button>
                   );
                 })}
@@ -2321,7 +2335,7 @@ export default function App() {
                           border: "1px solid #10b981",
                           fontSize: 11, color: posEditOpen ? "#000" : "#10b981",
                           padding: "2px 8px", borderRadius: 4, letterSpacing: 1,
-                          fontWeight: 700, cursor: "pointer", fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                          fontWeight: 700, cursor: "pointer", fontFamily: MONO,
                         }}
                         title="포지션 수정"
                       >{posLabel(nextPlayer.position)} ▾</button>
@@ -2372,7 +2386,7 @@ export default function App() {
                         <span style={{
                           marginLeft: "auto",
                           color: "#fbbf24", fontSize: 16, fontWeight: 900,
-                          fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                          fontFamily: MONO,
                         }}>{cardsToText(holeCards)}</span>
                       )}
                     </div>
@@ -2397,7 +2411,7 @@ export default function App() {
                                 borderRadius: 6,
                                 color: isCur ? "#000" : "#94a3b8",
                                 fontSize: 10, fontWeight: 700, cursor: "pointer",
-                                letterSpacing: 1, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                                letterSpacing: 1, fontFamily: MONO,
                               }}
                             >{posLabel(p)}</button>
                           );
@@ -2405,16 +2419,66 @@ export default function App() {
                       </div>
                     )}
 
+                    {/* 베팅 금액 (선택) — OPEN/BET/RAISE/ALL-IN에만 적용 */}
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 6, marginBottom: 8,
+                    }}>
+                      <span style={{ color: "#7e8ca0", fontSize: 9, letterSpacing: 1 }}>금액</span>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        className="bet-amount-input"
+                        value={betAmountInput}
+                        onChange={e => {
+                          const v = e.target.value;
+                          if (v === "" || /^\d*\.?\d*$/.test(v)) setBetAmountInput(v);
+                        }}
+                        placeholder="예 23500+- or 23.5+K"
+                        style={{
+                          flex: 1, minWidth: 0,
+                          background: "#020a14",
+                          border: "1px solid #1a2d45",
+                          borderRadius: 6, padding: "8px 10px",
+                          color: "#e2e8f0", fontSize: 14, fontWeight: 700,
+                          fontFamily: MONO,
+                        }}
+                      />
+                      {["", "k", "m"].map(u => {
+                        const sel = betUnit === u;
+                        return (
+                          <button
+                            key={u || "none"}
+                            onClick={() => setBetUnit(u)}
+                            style={{
+                              padding: "8px 12px",
+                              background: sel ? "#10b981" : "transparent",
+                              border: `1px solid ${sel ? "#10b981" : "#1a2d45"}`,
+                              borderRadius: 6,
+                              color: sel ? "#000" : "#7e8ca0",
+                              fontSize: 12, fontWeight: 900, cursor: "pointer",
+                              fontFamily: MONO,
+                            }}
+                          >{u === "" ? "—" : u.toUpperCase()}</button>
+                        );
+                      })}
+                      {betAmountInput && (
+                        <span style={{ color: "#cbd5e1", fontSize: 12, fontWeight: 900, minWidth: 40, textAlign: "right",
+                          fontFamily: MONO }}>
+                          {makeAmountText(betAmountInput, betUnit) || ""}
+                        </span>
+                      )}
+                    </div>
+
                     {/* 액션 버튼 */}
                     <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                      {ACTIONS.map((action, actionIdx) => {
-                        // 단축키와 동일한 가용성 로직 공용 사용
+                      {ACTIONS.map((action) => {
+                        // 버튼 탭 전용 (가용성은 isActionDisabled로 판정)
                         const disabled = isActionDisabled(action.id, nextPlayer);
 
                         return (
                           <button
                             key={action.id}
-                            onClick={() => { if (!disabled) { setPosEditOpen(false); logAction(nextPlayer.id, action.id); } }}
+                            onClick={() => { if (!disabled) { setPosEditOpen(false); doAction(nextPlayer.id, action.id); } }}
                             disabled={disabled}
                             style={{
                               flex: "1 1 auto", minWidth: 70,
@@ -2431,10 +2495,6 @@ export default function App() {
                               position: "relative",
                             }}
                           >
-                            <span style={{
-                              position: "absolute", top: 2, left: 5,
-                              fontSize: 8, opacity: .5, fontWeight: 700,
-                            }}>{actionIdx + 1}</span>
                             {action.label}
                           </button>
                         );
@@ -2449,17 +2509,7 @@ export default function App() {
                 const hasAny = STREETS.some(s => (currentHand.streets[s] || []).length > 0);
                 if (!hasAny) return null;
                 // 같은 카드 2명+ 이면 이름 표시 (로그와 동일 규칙)
-                const holeCards = currentHand.holeCards || {};
-                const cardCount = {};
-                Object.keys(holeCards).forEach(id => {
-                  const ct = cardsToText(holeCards[id]);
-                  if (ct) cardCount[ct] = (cardCount[ct] || 0) + 1;
-                });
-                const dupCardSeats = new Set();
-                Object.keys(holeCards).forEach(id => {
-                  const ct = cardsToText(holeCards[id]);
-                  if (ct && cardCount[ct] >= 2) dupCardSeats.add(Number(id));
-                });
+                const dupCardSeats = computeDupCardSeats(currentHand);
                 return (
                   <div style={{
                     marginTop: 12, padding: "8px 10px",
@@ -2494,7 +2544,7 @@ export default function App() {
                       <span style={{ color: "#10b981", fontSize: 9 }}>{posLabel(p.position)}</span>
                       <span style={{ color: "#94a3b8", fontWeight: 700 }}>{p.name}</span>
                       {cardsToText(hc) && (
-                        <span style={{ color: "#fbbf24", fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace", fontWeight: 900 }}>
+                        <span style={{ color: "#fbbf24", fontFamily: MONO, fontWeight: 900 }}>
                           {cardsToText(hc)}
                         </span>
                       )}
@@ -2627,7 +2677,7 @@ export default function App() {
                       borderRadius: 6, padding: "3px 10px",
                       color: "#94a3b8", fontSize: 10, fontWeight: 700,
                       letterSpacing: 1, cursor: "pointer",
-                      fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                      fontFamily: MONO,
                     }}
                   >📋 ALL</button>
                   <button
@@ -2641,7 +2691,7 @@ export default function App() {
                       borderRadius: 6, padding: "3px 10px",
                       color: "#dc2626", fontSize: 10, fontWeight: 700,
                       letterSpacing: 1, cursor: "pointer",
-                      fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                      fontFamily: MONO,
                     }}
                   >🗑 전체삭제</button>
                 </>
@@ -2686,6 +2736,11 @@ export default function App() {
       />
 
       <style>{`
+        .bet-amount-input::placeholder {
+          font-size: 10px;
+          font-weight: 400;
+          letter-spacing: 0;
+        }
         @keyframes cardPulse {
           0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, .7); }
           50% { box-shadow: 0 0 0 6px rgba(251, 191, 36, 0); }
