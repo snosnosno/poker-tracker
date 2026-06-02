@@ -49,6 +49,24 @@ const RANK_GRID = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "
 // 각 그리드 위치의 단축키 (A=a, 2~9=숫자, T/J/Q/K=알파벳)
 const RANK_KEYS = ["a", "2", "3", "4", "5", "6", "7", "8", "9", "t", "j", "q", "k"];
 
+// 미입력 슬롯 placeholder (확정 시 빈칸을 이걸로 채움). 'Ax'(랭크O 슈트X)와 구분되는 단일 문자.
+const CARD_UNKNOWN = "?";
+
+// 홀카드 장수 모드. UI에는 2/4/5/6만 노출, 7은 내부 허용(스터드 대비).
+const CARD_COUNT_OPTIONS = [
+  { count: 2, label: "홀덤" },
+  { count: 4, label: "PLO4" },
+  { count: 5, label: "PLO5" },
+  { count: 6, label: "PLO6" },
+];
+const DEFAULT_CARD_COUNT = 2;
+const MIN_CARD_COUNT = 2;
+const MAX_CARD_COUNT = 7;
+const clampCardCount = (n) => {
+  const v = Math.round(Number(n) || DEFAULT_CARD_COUNT);
+  return Math.min(MAX_CARD_COUNT, Math.max(MIN_CARD_COUNT, v));
+};
+
 const SUITS = [
   { id: "s", label: "♠", color: "#e2e8f0" },
   { id: "h", label: "♥", color: "#f87171" },
@@ -191,10 +209,11 @@ function getSeatPos(index, total = 9, rx = 39, ry = 31) {
 
 // ── C: 버튼 자리 기반 포지션 계산 (데드 스몰/데드 버튼 자동) ─────────────────
 // 인원수별 포지션 풀 (BB~UTG). 데드가 없을 때의 정상 집합.
+// early 자리는 앞=UTG, 뒤=CO 로 양끝 고정 (4명+ 에서는 항상 UTG가 첫 액션 자리).
 const FULL_BY_COUNT = {
   3: ["D", "SB", "BB"],
-  4: ["CO", "D", "SB", "BB"],
-  5: ["HJ", "CO", "D", "SB", "BB"],
+  4: ["UTG", "D", "SB", "BB"],
+  5: ["UTG", "CO", "D", "SB", "BB"],
   6: ["UTG", "HJ", "CO", "D", "SB", "BB"],
   7: ["UTG", "MP", "HJ", "CO", "D", "SB", "BB"],
   8: ["UTG", "UTG+1", "MP", "HJ", "CO", "D", "SB", "BB"],
@@ -562,88 +581,90 @@ function CardChip({ card, size = "sm" }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // 카드 선택 모달 (랭크만, 슈트 무시)
 // ══════════════════════════════════════════════════════════════════════════════
-function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, null] }) {
-  const [picks, setPicks] = useState([null, null]);
-  const [activeSlot, setActiveSlot] = useState(0); // 0 또는 1
+function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, null], cardCount = 2 }) {
+  const makeEmpty = () => Array(cardCount).fill(null);
+  const [picks, setPicks] = useState(makeEmpty);
+  const [activeSlot, setActiveSlot] = useState(0);
+
+  // 최신 값을 키보드 입력에서 stale 없이 읽기 위한 ref (부수효과를 setState 업데이터 밖으로)
+  const activeSlotRef = React.useRef(0);
+  const picksRef = React.useRef([]);
+  activeSlotRef.current = activeSlot;
+  picksRef.current = picks;
 
   useEffect(() => {
     if (open) {
-      setPicks([initialCards[0] || null, initialCards[1] || null]);
-      setActiveSlot(initialCards[0] ? 1 : 0);
+      // 기존 카드(길이 다를 수 있음)를 cardCount 길이에 맞춰 로드
+      const loaded = makeEmpty().map((_, i) => initialCards[i] || null);
+      setPicks(loaded);
+      picksRef.current = loaded;
+      const firstEmpty = loaded.findIndex(c => !c);
+      setActiveSlot(firstEmpty === -1 ? 0 : firstEmpty);
     }
   }, [open]);
+
+  // 확정: 빈 슬롯은 ? 로 채워 저장 (부분입력 허용)
+  const commit = (arr) => {
+    onSelectBoth(arr.map(c => c || CARD_UNKNOWN));
+    setPicks(makeEmpty());
+    setActiveSlot(0);
+  };
+
+  // 한 슬롯 채우고 다음 빈 슬롯으로 이동 (없으면 그대로). ref 기준이라 rapid 입력 안전.
+  // card = 완성된 카드 문자열 ('Ax' 등) 또는 CARD_UNKNOWN('?')
+  const fillSlot = (slotArg, card) => {
+    const slot = slotArg != null ? slotArg : activeSlotRef.current;
+    const next = picksRef.current.map((c, i) => (i === slot ? card : c));
+    picksRef.current = next;
+    setPicks(next);
+    const na = next.findIndex(c => !c);
+    setActiveSlot(na === -1 ? slot : na);
+  };
 
   // 카드 모달 키보드 입력
   useEffect(() => {
     if (!open) return;
     const handleKey = (e) => {
       const k = e.key.toLowerCase();
-      if (k === "enter") {
-        setPicks(cur => {
-          if (cur[0] !== null && cur[1] !== null) {
-            onSelectBoth(cur);
-            return [null, null];
-          }
-          return cur;
-        });
-        return;
-      }
+      if (k === "enter") { commit(picksRef.current); return; }
       if (k === "escape") { onClose(); return; }
-      // '1' 도 A로 허용
-      const lookupKey = k === "1" ? "a" : k;
+      // ? 입력: '0' / '/' / '?'
+      if (k === "0" || k === "/" || k === "?") { fillSlot(null, CARD_UNKNOWN); return; }
+      const lookupKey = k === "1" ? "a" : k; // '1' 도 A
       const gi = RANK_KEYS.indexOf(lookupKey);
-      if (gi >= 0) {
-        const card = RANK_GRID[gi] + "x";
-        setActiveSlot(slot => {
-          setPicks(prev => {
-            const next = [...prev];
-            next[slot] = card;
-            return next;
-          });
-          return slot === 0 ? 1 : 0;
-        });
-      }
+      if (gi >= 0) fillSlot(null, RANK_GRID[gi] + "x"); // 슈트 placeholder 'x'
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [open, onSelectBoth, onClose]);
+  }, [open, onSelectBoth, onClose, cardCount]);
 
   if (!open) return null;
 
-  // 카드 선택: 현재 active 슬롯에 넣고 다음 슬롯으로
-  // 랭크는 'A','K' 등 한 글자. 내부 저장은 'Ax', 'Kx' (슈트 placeholder 'x')
-  const pickRank = (rank) => {
-    const card = rank + "x";
-    setPicks(prev => {
-      const next = [...prev];
-      next[activeSlot] = card;
-      return next;
-    });
-    // 다음 빈 슬롯으로
-    setActiveSlot(s => (s === 0 ? 1 : 0));
-  };
+  const pickRank = (rank) => fillSlot(activeSlot, rank + "x");
+  const pickUnknown = () => fillSlot(activeSlot, CARD_UNKNOWN);
 
-  const confirm = () => {
-    onSelectBoth(picks);
-    setPicks([null, null]);
-    setActiveSlot(0);
-  };
+  const confirm = () => commit(picks);
 
   const clearAll = () => {
-    setPicks([null, null]);
+    const empty = makeEmpty();
+    picksRef.current = empty;
+    setPicks(empty);
     setActiveSlot(0);
   };
 
   const clearSlot = (slot) => {
-    setPicks(prev => {
-      const next = [...prev];
-      next[slot] = null;
-      return next;
-    });
+    const next = picksRef.current.map((c, i) => (i === slot ? null : c));
+    picksRef.current = next;
+    setPicks(next);
     setActiveSlot(slot);
   };
 
-  const canConfirm = picks[0] !== null && picks[1] !== null;
+  // 부분입력 허용 → 1장 이상이면 확정 가능 (A규칙: ?만 채워 액션도 허용되지만, 빈 확정 오조작 방지)
+  const canConfirm = picks.some(Boolean);
+  // 미리보기 카드 크기를 장수에 맞춰 축소
+  const pvW = cardCount <= 2 ? 70 : cardCount <= 4 ? 56 : 44;
+  const pvH = Math.round(pvW * 96 / 70);
+  const pvFont = cardCount <= 2 ? 42 : cardCount <= 4 ? 32 : 26;
 
   return (
     <div style={{
@@ -662,23 +683,23 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
         <div style={{
           color: "#10b981", fontSize: 11, letterSpacing: 2, marginBottom: 14,
           textAlign: "center",
-        }}>홀카드 선택 (랭크만)</div>
+        }}>홀카드 선택 (랭크만) · {cardCount}장</div>
 
-        {/* 선택된 카드 미리보기 (2장, 큼직하게) */}
+        {/* 선택된 카드 미리보기 (cardCount장) */}
         <div style={{
-          display: "flex", justifyContent: "center", gap: 12,
-          marginBottom: 18,
+          display: "flex", justifyContent: "center", gap: 10,
+          marginBottom: 18, flexWrap: "wrap",
         }}>
-          {[0, 1].map(i => {
+          {picks.map((p, i) => {
             const isActive = activeSlot === i;
             return (
               <button
                 key={i}
-                onClick={() => picks[i] ? clearSlot(i) : setActiveSlot(i)}
+                onClick={() => p ? clearSlot(i) : setActiveSlot(i)}
                 style={{
-                  width: 70, height: 96,
-                  background: picks[i] ? "#fafafa" : "transparent",
-                  border: `2.5px ${picks[i] ? "solid transparent" : "dashed"} ${
+                  width: pvW, height: pvH,
+                  background: p ? "#fafafa" : "transparent",
+                  border: `2.5px ${p ? "solid transparent" : "dashed"} ${
                     isActive ? "#fbbf24" : "#1a2d45"
                   }`,
                   borderRadius: 8,
@@ -686,14 +707,14 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
                   color: "#0f172a",
                   fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
                   fontWeight: 900,
-                  fontSize: 42,
+                  fontSize: pvFont,
                   cursor: "pointer",
-                  boxShadow: isActive && !picks[i] ? "0 0 12px rgba(251,191,36,.4)" : "none",
-                  animation: isActive && !picks[i] ? "cardPulse 1.2s infinite" : "none",
+                  boxShadow: isActive && !p ? "0 0 12px rgba(251,191,36,.4)" : "none",
+                  animation: isActive && !p ? "cardPulse 1.2s infinite" : "none",
                 }}
               >
-                {picks[i] ? picks[i][0] : (
-                  <span style={{ color: "#1a2d45", fontSize: 28 }}>?</span>
+                {p ? p[0] : (
+                  <span style={{ color: "#1a2d45", fontSize: Math.round(pvFont * 0.66) }}>?</span>
                 )}
               </button>
             );
@@ -737,6 +758,32 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
               </button>
             );
           })}
+          {/* ? (모름) — 그리드 14번째 칸. 랭크와 구분되게 회색. */}
+          <button
+            onClick={pickUnknown}
+            style={{
+              aspectRatio: "1 / 1.3",
+              background: "#1a2d45",
+              border: "2px solid transparent",
+              borderRadius: 8,
+              color: "#cbd5e1",
+              fontWeight: 900,
+              fontSize: 24,
+              fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+              cursor: "pointer",
+              transition: "all .1s",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              position: "relative",
+            }}
+            title="모름 (단축키 0 또는 /)"
+          >
+            <span style={{
+              position: "absolute", top: 2, left: 4,
+              fontSize: 9, color: "#7e8ca0",
+              opacity: .8, fontWeight: 700, fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+            }}>0</span>
+            ?
+          </button>
         </div>
 
         {/* 하단 버튼 */}
@@ -852,14 +899,15 @@ function HandHistoryCard({ hand }) {
           fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
         }}>
           {/* 홀카드 표시 */}
-          {Object.entries(hand.holeCards || {}).filter(([_, c]) => c[0] || c[1]).length > 0 && (
+          {Object.entries(hand.holeCards || {}).filter(([_, c]) => c.some(Boolean)).length > 0 && (
             <div style={{ marginBottom: 10 }}>
               <span style={{ color: "#7e8ca0", fontSize: 10, letterSpacing: 2 }}>Cards: </span>
-              {hand.seats.filter(s => hand.holeCards?.[s.id]?.[0] || hand.holeCards?.[s.id]?.[1]).map(s => (
+              {hand.seats.filter(s => hand.holeCards?.[s.id]?.some(Boolean)).map(s => (
                 <span key={s.id} style={{ marginRight: 10, display: "inline-flex", alignItems: "center", gap: 4 }}>
                   <span style={{ color: "#94a3b8", fontSize: 11 }}>{s.name}</span>
-                  <CardChip card={hand.holeCards[s.id][0]} size="sm" />
-                  <CardChip card={hand.holeCards[s.id][1]} size="sm" />
+                  {hand.holeCards[s.id].map((c, ci) => (
+                    <CardChip key={ci} card={c} size="sm" />
+                  ))}
                 </span>
               ))}
             </div>
@@ -1209,6 +1257,7 @@ export default function App() {
   const [selectedWinners, setSelectedWinners] = useState([]); // 다중 위너 선택용 seatId 배열
   const [cardPickerFor, setCardPickerFor] = useState(null); // { seatId }
   const [recapHand, setRecapHand] = useState(null); // 방금 끝난 핸드를 모달로 보여줌
+  const [holeCardCount, setHoleCardCount] = useState(() => clampCardCount(loadFromStorage("pt_cardcount", DEFAULT_CARD_COUNT)));
 
   // hands 변경되면 localStorage에 자동 저장
   useEffect(() => {
@@ -1224,6 +1273,18 @@ export default function App() {
   useEffect(() => {
     try { window.localStorage.setItem("pt_button", JSON.stringify(buttonSeatId)); } catch {}
   }, [buttonSeatId]);
+
+  // 홀카드 장수 저장
+  useEffect(() => {
+    try { window.localStorage.setItem("pt_cardcount", JSON.stringify(holeCardCount)); } catch {}
+  }, [holeCardCount]);
+
+  // 진행 중 핸드(또는 리캡 떠 있을 때)는 장수 변경 잠금 → 편집 가능한 핸드와 항상 일치 보장
+  const cardCountLocked = !!currentHand || !!recapHand;
+  const changeCardCount = (n) => {
+    if (cardCountLocked) return;
+    setHoleCardCount(clampCardCount(n));
+  };
 
   const activeSeats = seats.filter(s => s.active && s.name);
   // 실제 핸드에 참여하는 시트 (아웃된 시트 제외 = 데드버튼/데드블라인드 표현)
@@ -1264,6 +1325,7 @@ export default function App() {
       dead,
       streets: { PREFLOP: [], FLOP: [], TURN: [], RIVER: [] },
       holeCards: {},
+      cardCount: holeCardCount,
       winner: null,
       startedAt: new Date().toLocaleTimeString("ko-KR"),
     });
@@ -1479,8 +1541,9 @@ export default function App() {
     const lastAggressive = [...streetActions].reverse()
       .find(a => a.action === "open" || a.action === "bet" || a.action === "raise" || a.action === "allin");
 
-    const holeCards = currentHand.holeCards[player.id] || [null, null];
-    const hasCards = holeCards[0] && holeCards[1];
+    const rawHole = currentHand.holeCards[player.id];
+    // A규칙: 카드 확정(entry 생성)되면 ?라도 액션 허용. 확정 전엔 폴드만 가능.
+    const hasCards = !!rawHole && rawHole.length > 0;
 
     if (currentStreet === 0 && !hasCards && actionId !== "fold") return true;
     if (actionId === "open") {
@@ -1730,6 +1793,44 @@ export default function App() {
       {/* ══════════════════ TABLE VIEW ══════════════════ */}
       {activeView === "table" && (
         <div style={{ padding: "14px 16px" }}>
+
+          {/* 게임(홀카드 장수) 선택 — 핸드 진행 중엔 잠금 */}
+          <div style={{
+            display: "flex", alignItems: "center", gap: 6,
+            marginBottom: 12, flexWrap: "wrap",
+          }}>
+            <span style={{ color: "#7e8ca0", fontSize: 9, letterSpacing: 2, marginRight: 2 }}>GAME</span>
+            {CARD_COUNT_OPTIONS.map(opt => {
+              const isSel = holeCardCount === opt.count;
+              return (
+                <button
+                  key={opt.count}
+                  onClick={() => changeCardCount(opt.count)}
+                  disabled={cardCountLocked}
+                  title={cardCountLocked ? "핸드 진행 중엔 변경 불가" : ""}
+                  style={{
+                    padding: "5px 10px",
+                    background: isSel ? "#10b981" : "transparent",
+                    border: `1px solid ${isSel ? "#10b981" : "#1a2d45"}`,
+                    borderRadius: 5,
+                    color: isSel ? "#000" : (cardCountLocked ? "#3a4a5e" : "#7e8ca0"),
+                    fontSize: 11, fontWeight: 700,
+                    cursor: cardCountLocked ? "not-allowed" : "pointer",
+                    fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+                    opacity: cardCountLocked && !isSel ? 0.5 : 1,
+                  }}
+                >{opt.label}<span style={{ fontSize: 9, opacity: .6, marginLeft: 4 }}>{opt.count}</span></button>
+              );
+            })}
+            {/* 비표준 장수(예: 7 스터드)를 쓰던 데이터면 라벨 보강 */}
+            {!CARD_COUNT_OPTIONS.some(o => o.count === holeCardCount) && (
+              <span style={{
+                padding: "5px 10px", background: "#10b981", borderRadius: 5,
+                color: "#000", fontSize: 11, fontWeight: 700,
+                fontFamily: "'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace",
+              }}>{holeCardCount}장</span>
+            )}
+          </div>
 
           {/* 원형 테이블 */}
           <div style={{ position: "relative", width: "100%", paddingBottom: "80%", marginBottom: 14 }}>
@@ -2176,8 +2277,11 @@ export default function App() {
                   );
                 }
 
-                const holeCards = currentHand.holeCards[nextPlayer.id] || [null, null];
-                const hasCardsForNext = !!(holeCards[0] && holeCards[1]);
+                const handCardCount = currentHand.cardCount || holeCardCount;
+                const rawHole = currentHand.holeCards[nextPlayer.id];
+                const holeCards = rawHole || Array(handCardCount).fill(null);
+                // A규칙: 카드 모달에서 확정(entry 생성)되면 ?라도 액션 허용
+                const hasCardsForNext = !!rawHole && rawHole.length > 0;
 
                 return (
                   <div style={{
@@ -2229,24 +2333,28 @@ export default function App() {
                         <button
                           onClick={() => setCardPickerFor({ seatId: nextPlayer.id })}
                           style={{
-                            display: "flex", gap: 3,
+                            display: "flex", gap: 3, flexWrap: "wrap", justifyContent: "flex-end",
                             background: "transparent", border: "none", padding: 0,
-                            cursor: "pointer", marginLeft: "auto",
+                            cursor: "pointer", marginLeft: "auto", maxWidth: "60%",
                           }}
                         >
-                          {[0, 1].map(slot => (
-                            <div key={slot} style={{
-                              width: 30, height: 40,
-                              background: holeCards[slot] ? "transparent" : "#020a14",
-                              border: holeCards[slot] ? "none" : "1.5px dashed #fbbf24",
-                              borderRadius: 5,
-                              display: "flex", alignItems: "center", justifyContent: "center",
-                              color: "#fbbf24", fontSize: 14,
-                              animation: !holeCards[slot] ? "cardPulse 1.2s infinite" : "none",
-                            }}>
-                              {holeCards[slot] ? <CardChip card={holeCards[slot]} size="md" /> : "?"}
-                            </div>
-                          ))}
+                          {holeCards.map((c, slot) => {
+                            const sw = handCardCount <= 2 ? 30 : handCardCount <= 5 ? 26 : 22;
+                            const sh = Math.round(sw * 40 / 30);
+                            return (
+                              <div key={slot} style={{
+                                width: sw, height: sh,
+                                background: c ? "transparent" : "#020a14",
+                                border: c ? "none" : "1.5px dashed #fbbf24",
+                                borderRadius: 5,
+                                display: "flex", alignItems: "center", justifyContent: "center",
+                                color: "#fbbf24", fontSize: 14,
+                                animation: !c ? "cardPulse 1.2s infinite" : "none",
+                              }}>
+                                {c ? <CardChip card={c} size={handCardCount <= 2 ? "md" : "sm"} /> : "?"}
+                              </div>
+                            );
+                          })}
                         </button>
                       )}
                       {currentStreet === 0 && !hasCardsForNext && (
@@ -2567,6 +2675,7 @@ export default function App() {
         onClose={closeCardPicker}
         onSelectBoth={handleCardPick}
         initialCards={currentHand?.holeCards[cardPickerFor?.seatId] || [null, null]}
+        cardCount={currentHand?.cardCount || holeCardCount}
       />
 
       {/* 핸드 종료 리캡 모달 */}
