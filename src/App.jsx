@@ -278,7 +278,7 @@ const FULL_BY_COUNT = {
   4: ["UTG", "D", "SB", "BB"],
   5: ["UTG", "CO", "D", "SB", "BB"],
   6: ["UTG", "HJ", "CO", "D", "SB", "BB"],
-  7: ["UTG", "MP", "HJ", "CO", "D", "SB", "BB"],
+  7: ["UTG", "UTG+1", "HJ", "CO", "D", "SB", "BB"],
   8: ["UTG", "UTG+1", "MP", "HJ", "CO", "D", "SB", "BB"],
   9: ["UTG", "UTG+1", "MP", "MP+1", "HJ", "CO", "D", "SB", "BB"],
 };
@@ -1842,6 +1842,7 @@ export default function App() {
 
   const currentStreetName = STREETS[currentStreet];
   const isHandActive = !!currentHand;
+  const nextToActId = isHandActive ? (getNextToAct()?.id ?? null) : null;
 
   // ════════════════════════════════════════════════════════════════════════
   // RENDER
@@ -2009,6 +2010,7 @@ export default function App() {
               {/* 시트들 */}
               {seats.map((seat, i) => {
                 const pos = getSeatPos(i);
+                const isNextToAct = nextToActId != null && seat.id === nextToActId;
                 const lastAction = currentHand
                   ? currentHand.streets[currentStreetName]?.find(a => a.seatId === seat.id)
                   : null;
@@ -2044,11 +2046,13 @@ export default function App() {
                       onClick={() => handleSeatTap(seat)}
                       style={{
                         width: 46, height: 46, borderRadius: "50%",
-                        background: actionColor
+                        background: isNextToAct ? "#0c3a44"
+                          : actionColor
                           ? actionColor + "22"
                           : seat.active ? "#0a2e1e" : "#080c14",
                         border: `2px solid ${
                           swapMode && swapFirst === seat.id ? "#fbbf24"
+                            : isNextToAct ? "#22d3ee"
                             : seat.out ? "#7f1d2e"
                             : actionColor ? actionColor
                             : seat.active ? "#10b981" : "#1a2d3f"
@@ -2060,12 +2064,14 @@ export default function App() {
                         gap: 1,
                         opacity: seat.out ? .4 : 1,
                         boxShadow: swapMode && swapFirst === seat.id ? "0 0 14px rgba(251,191,36,.6)"
+                          : isNextToAct ? "0 0 16px rgba(34,211,238,.7)"
                           : actionColor ? `0 0 10px ${actionColor}55`
                           : seat.active && !seat.out ? "0 0 8px rgba(16,185,129,.2)" : "none",
+                        animation: isNextToAct ? "nextPulse 1.1s infinite" : "none",
                       }}
                     >
-                      <span style={{ fontSize: 8, color: seat.out ? "#f87171" : seat.active ? "#10b981" : "#536583", letterSpacing: .5 }}>
-                        {seat.out ? "OUT" : seat.position ? posLabel(seat.position) : (i + 1)}
+                      <span style={{ fontSize: 8, color: isNextToAct ? "#22d3ee" : seat.out ? "#f87171" : seat.active ? "#10b981" : "#536583", letterSpacing: .5 }}>
+                        {seat.out ? "OUT" : (seat.name && seat.position) ? posLabel(seat.position) : (i + 1)}
                       </span>
                       <span style={{ fontSize: seat.name ? 9 : 14, fontWeight: seat.name ? 700 : 400 }}>
                         {seat.name ? seat.name.slice(0, 5) : "+"}
@@ -2847,6 +2853,10 @@ export default function App() {
           font-size: 10px;
           font-weight: 400;
           letter-spacing: 0;
+        }
+        @keyframes nextPulse {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(34, 211, 238, .55); }
+          50% { box-shadow: 0 0 0 6px rgba(34, 211, 238, 0); }
         }
         @keyframes cardPulse {
           0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, .7); }
