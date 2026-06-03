@@ -171,9 +171,11 @@ function processPreflopEntries(rawEntries, isHeadsUp) {
   return { entries, showAllFold };
 }
 
-// 프리플랍에서 전원 폴드로 끝났는지 (오픈 후 스틸/워크 모두 포함).
-// 조건: 확정된 핸드 + 플랍 이상 액션 없음 + 폴드 존재 + 생존자(폴드 안 한 시트) 정확히 1명.
-// 올인-콜 쇼다운(생존 2명+)은 제외. 헤즈업은 폴드가 그대로 보이므로 제외.
+// 프리플랍에서 (오픈폴드만으로) 전원 폴드되어 끝났는지.
+// 조건: 확정 + 플랍 이상 없음 + 폴드 존재 + 생존자 정확히 1명
+//       + 모든 폴드가 "첫 액션 폴드"(=숨겨지는 오픈폴드)일 것.
+// 이미 액션한 사람이 폴드한 경우(콜/오픈 후 폴드 = 로그에 보임)는 ALL-FOLD 생략.
+// 올인-콜 쇼다운(생존 2명+)·헤즈업도 제외.
 function preflopEndedByFold(hand) {
   if (!hand) return false;
   const isHeadsUp = (hand.seats?.length || 0) === 2;
@@ -185,6 +187,17 @@ function preflopEndedByFold(hand) {
   const pre = s.PREFLOP || [];
   const foldedIds = new Set(pre.filter(e => e.action === "fold").map(e => e.seatId));
   if (foldedIds.size === 0) return false;
+  // 이미 액션한(=폴드 아닌 행동을 한) 사람이 나중에 폴드 → 보이는 폴드 → ALL-FOLD 생략
+  const acted = new Set();
+  let hasVisibleFold = false;
+  for (const e of pre) {
+    if (e.action === "fold") {
+      if (acted.has(e.seatId)) hasVisibleFold = true;
+    } else {
+      acted.add(e.seatId);
+    }
+  }
+  if (hasVisibleFold) return false;
   const alive = (hand.seats || []).filter(sx => !foldedIds.has(sx.id));
   return alive.length === 1;
 }
@@ -349,6 +362,21 @@ function computePositions(seatsInOrder, buttonSeatId) {
 // 자리에 사람이 앉아있는지 (아웃이어도 점유 상태로 봄 = 데드버튼/데드스몰 표현)
 function isOccupied(s) {
   return !!(s && s.active && s.name);
+}
+
+// OUT 자리는 N핸드 지나면 자동으로 비움(점유 해제) → 링에서 빠져 데드버튼/스몰 반복 방지
+const OUT_VACATE_AFTER = 2;
+// 새 핸드 시작 시 호출: OUT 자리 카운트++, 한계 초과 시 자리 비우기.
+function applyOutAging(seats) {
+  return seats.map(s => {
+    if (!s.out) return s;
+    const c = (s.outCount || 0) + 1;
+    if (c > OUT_VACATE_AFTER) {
+      // 자리 비우기 (빈 의자로)
+      return { ...s, name: "", active: false, out: false, outCount: 0, position: undefined };
+    }
+    return { ...s, outCount: c };
+  });
 }
 
 // 버튼을 다음 "사람 앉은" 자리로 전진.
@@ -1355,10 +1383,13 @@ export default function App() {
   const startHand = () => {
     if (playingSeats.length < 2) return;
 
+    // OUT 자리 경과 처리 (2핸드 지나면 자리 비움). 이번 핸드 링/포지션에 즉시 반영.
+    const aged = applyOutAging(seats);
+
     // 버튼 위치 결정: 점유된 자리(사람 앉음)를 가리켜야 유효.
     // 비점유(빈 시트)거나 미지정이면 첫 playing 시트로 폴백.
     let btn = buttonSeatId;
-    const btnSeat = seats.find(s => s.id === btn);
+    const btnSeat = aged.find(s => s.id === btn);
     const btnValid = btn != null && isOccupied(btnSeat);
     if (!btnValid) {
       btn = playingSeats[0].id;
@@ -1366,15 +1397,15 @@ export default function App() {
     }
 
     // 버튼 자리 기준 포지션 계산 (데드 스몰/버튼 자동)
-    const { positions, dead } = computePositions(seats, btn);
+    const { positions, dead } = computePositions(aged, btn);
 
     // 참여 시트 + 계산된 포지션 (계산에서 빠진 시트는 제외 = 안전)
     const handSeats = playingSeats
       .filter(s => positions[s.id])
       .map(s => ({ id: s.id, name: s.name, position: positions[s.id] }));
 
-    // 원본 seats에도 포지션 반영 (테이블 표시/수동수정 일관성)
-    setSeats(prev => prev.map(s =>
+    // aged + 포지션 반영 (테이블 표시/수동수정 일관성)
+    setSeats(aged.map(s =>
       positions[s.id] ? { ...s, position: positions[s.id] } : s
     ));
 
@@ -1798,6 +1829,8 @@ export default function App() {
             position: editPosition || s.position,
             active: !!editName.trim(),
             out: editOut,
+            // OUT 새로 켜면 카운트 0부터, 끄면 제거 (재진입 시 다시 2핸드 보장)
+            outCount: editOut ? (s.out ? (s.outCount || 0) : 0) : 0,
           }
         : s
     ));
