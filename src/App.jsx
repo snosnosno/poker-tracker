@@ -171,7 +171,25 @@ function processPreflopEntries(rawEntries, isHeadsUp) {
   return { entries, showAllFold };
 }
 
-// 구글 시트에서 한 셀에 들어가도록 큰따옴표로 감싸기 (내부 줄바꿈 보존)
+// 프리플랍에서 전원 폴드로 끝났는지 (오픈 후 스틸/워크 모두 포함).
+// 조건: 확정된 핸드 + 플랍 이상 액션 없음 + 폴드 존재 + 생존자(폴드 안 한 시트) 정확히 1명.
+// 올인-콜 쇼다운(생존 2명+)은 제외. 헤즈업은 폴드가 그대로 보이므로 제외.
+function preflopEndedByFold(hand) {
+  if (!hand) return false;
+  const isHeadsUp = (hand.seats?.length || 0) === 2;
+  if (isHeadsUp) return false;
+  const finalized = !!(hand.winnerSeatId || hand.winnerName || hand.winner);
+  if (!finalized) return false;
+  const s = hand.streets || {};
+  if ((s.FLOP?.length || s.TURN?.length || s.RIVER?.length)) return false;
+  const pre = s.PREFLOP || [];
+  const foldedIds = new Set(pre.filter(e => e.action === "fold").map(e => e.seatId));
+  if (foldedIds.size === 0) return false;
+  const alive = (hand.seats || []).filter(sx => !foldedIds.has(sx.id));
+  return alive.length === 1;
+}
+
+
 // 내부 " 는 "" 로 이스케이프
 function toSheetCell(text) {
   return '"' + String(text).replace(/"/g, '""') + '"';
@@ -192,7 +210,7 @@ function handToText(hand) {
     if (isPreflop) {
       const r = processPreflopEntries(rawEntries, isHeadsUp);
       entries = r.entries;
-      showAllFold = r.showAllFold;
+      showAllFold = preflopEndedByFold(hand);
     } else {
       entries = rawEntries;
     }
@@ -440,6 +458,18 @@ function computeNextToAct(hand, streetIdx) {
   return null;
 }
 
+// 두 자리의 내용(name/active/out)만 교체. id/position은 의자에 남음(포지션은 자리 기준 자동계산).
+function swapSeatContents(seats, idA, idB) {
+  const a = seats.find(x => x.id === idA);
+  const b = seats.find(x => x.id === idB);
+  if (!a || !b || idA === idB) return seats;
+  return seats.map(s => {
+    if (s.id === idA) return { ...s, name: b.name, active: b.active, out: !!b.out };
+    if (s.id === idB) return { ...s, name: a.name, active: a.active, out: !!a.out };
+    return s;
+  });
+}
+
 // 시트 초기화 (기본 포지션 미리 할당)
 const initSeats = () =>
   Array.from({ length: 9 }, (_, i) => ({
@@ -546,7 +576,7 @@ function StreetActionsInline({ hand, streetIdx, dupCardSeats }) {
   if (isPreflop) {
     const r = processPreflopEntries(rawEntries, isHeadsUp);
     entries = r.entries;
-    showAllFold = r.showAllFold;
+    showAllFold = preflopEndedByFold(hand);
   } else {
     entries = rawEntries;
   }
@@ -985,7 +1015,7 @@ function HandHistoryCard({ hand }) {
             if (isPreflop) {
               const r = processPreflopEntries(rawEntries, isHeadsUp);
               entries = r.entries;
-              showAllFold = r.showAllFold;
+              showAllFold = preflopEndedByFold(hand);
             } else {
               entries = rawEntries;
             }
@@ -1138,7 +1168,7 @@ function RecapModal({ hand, onClose, onReopen }) {
             if (isPreflop) {
               const r = processPreflopEntries(rawEntries, isHeadsUp);
               entries = r.entries;
-              showAllFold = r.showAllFold;
+              showAllFold = preflopEndedByFold(hand);
             } else {
               entries = rawEntries;
             }
@@ -1253,6 +1283,8 @@ export default function App() {
   const [currentHand, setCurrentHand] = useState(null);
   const [currentStreet, setCurrentStreet] = useState(0);
   const [editingSeat, setEditingSeat] = useState(null);
+  const [swapMode, setSwapMode] = useState(false); // 자리 교체 모드
+  const [swapFirst, setSwapFirst] = useState(null); // 첫 선택 좌석 id
   const [editName, setEditName] = useState("");
   const [editPosition, setEditPosition] = useState("");
   const [editOut, setEditOut] = useState(false);
@@ -1296,6 +1328,23 @@ export default function App() {
   const changeCardCount = (n) => {
     if (cardCountLocked) return;
     setHoleCardCount(clampCardCount(n));
+  };
+
+  // 좌석 탭: 일반=편집모달, 스왑모드=두 자리의 내용(name/active/out) 교체
+  // position/id/버튼은 의자에 남고, 포지션은 다음 핸드에서 자리 기준 자동계산됨
+  const handleSeatTap = (seat) => {
+    if (isHandActive) return;
+    if (!swapMode) {
+      setEditingSeat(seat.id);
+      setEditName(seat.name);
+      setEditPosition(seat.position || POSITION_ORDER[seat.id] || "");
+      setEditOut(!!seat.out);
+      return;
+    }
+    if (swapFirst === null) { setSwapFirst(seat.id); return; }
+    if (swapFirst === seat.id) { setSwapFirst(null); return; } // 같은 자리 = 해제
+    setSeats(prev => swapSeatContents(prev, swapFirst, seat.id));
+    setSwapFirst(null);
   };
 
   const activeSeats = seats.filter(s => s.active && s.name);
@@ -1346,6 +1395,8 @@ export default function App() {
     // 새 핸드: 금액 입력 초기화 (단위는 k 기본, 직전 핸드의 m/없음 잔존 방지)
     setBetAmountInput("");
     setBetUnit("k");
+    setSwapMode(false);
+    setSwapFirst(null);
   };
 
   // ── 액션 기록 ────────────────────────────────────────────────────────────
@@ -1846,6 +1897,33 @@ export default function App() {
             )}
           </div>
 
+          {/* 자리 교체 (스왑) 토글 — 핸드 진행 중엔 비활성 */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <button
+              onClick={() => {
+                if (isHandActive) return;
+                setSwapMode(m => !m);
+                setSwapFirst(null);
+              }}
+              disabled={isHandActive}
+              style={{
+                padding: "5px 12px",
+                background: swapMode ? "#fbbf24" : "transparent",
+                border: `1px solid ${swapMode ? "#fbbf24" : "#1a2d45"}`,
+                borderRadius: 5,
+                color: swapMode ? "#000" : (isHandActive ? "#3a4a5e" : "#7e8ca0"),
+                fontSize: 11, fontWeight: 700,
+                cursor: isHandActive ? "not-allowed" : "pointer",
+                fontFamily: MONO,
+              }}
+            >⇄ 자리교체{swapMode ? " ON" : ""}</button>
+            {swapMode && (
+              <span style={{ color: "#fbbf24", fontSize: 10 }}>
+                {swapFirst === null ? "옮길 자리를 탭하세요" : "바꿀 자리를 탭하세요 (같은 자리=취소)"}
+              </span>
+            )}
+          </div>
+
           {/* 원형 테이블 */}
           <div style={{ position: "relative", width: "100%", paddingBottom: "80%", marginBottom: 14 }}>
             <div style={{ position: "absolute", inset: 0 }}>
@@ -1930,20 +2008,15 @@ export default function App() {
                     transition: "all .3s",
                   }}>
                     <button
-                      onClick={() => {
-                        if (isHandActive) return;
-                        setEditingSeat(seat.id);
-                        setEditName(seat.name);
-                        setEditPosition(seat.position || POSITION_ORDER[seat.id] || "");
-                        setEditOut(!!seat.out);
-                      }}
+                      onClick={() => handleSeatTap(seat)}
                       style={{
                         width: 46, height: 46, borderRadius: "50%",
                         background: actionColor
                           ? actionColor + "22"
                           : seat.active ? "#0a2e1e" : "#080c14",
                         border: `2px solid ${
-                          seat.out ? "#7f1d2e"
+                          swapMode && swapFirst === seat.id ? "#fbbf24"
+                            : seat.out ? "#7f1d2e"
                             : actionColor ? actionColor
                             : seat.active ? "#10b981" : "#1a2d3f"
                         }`,
@@ -1953,7 +2026,8 @@ export default function App() {
                         alignItems: "center", justifyContent: "center",
                         gap: 1,
                         opacity: seat.out ? .4 : 1,
-                        boxShadow: actionColor ? `0 0 10px ${actionColor}55`
+                        boxShadow: swapMode && swapFirst === seat.id ? "0 0 14px rgba(251,191,36,.6)"
+                          : actionColor ? `0 0 10px ${actionColor}55`
                           : seat.active && !seat.out ? "0 0 8px rgba(16,185,129,.2)" : "none",
                       }}
                     >
