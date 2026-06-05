@@ -3,8 +3,44 @@ import React, { useState, useEffect, useCallback } from "react";
 // ══════════════════════════════════════════════════════════════════════════════
 // 상수
 // ══════════════════════════════════════════════════════════════════════════════
-const STREETS = ["PREFLOP", "FLOP", "TURN", "RIVER"];
-const STREET_SHORT = { PREFLOP: "Pre", FLOP: "Flop", TURN: "Turn", RIVER: "River" };
+const STREETS = ["PREFLOP", "FLOP", "TURN", "RIVER"]; // 홀덤/오마하 기본 (하위호환 기본값)
+const STREET_SHORT = {
+  PREFLOP: "Pre", FLOP: "Flop", TURN: "Turn", RIVER: "River",
+  DRAW1: "Draw 1", DRAW2: "Draw 2", DRAW3: "Draw 3",
+};
+
+// 게임 타입 정의: 카드 장수 + 스트리트 구성 + 드로우 여부
+const GAME_TYPES = {
+  holdem: { label: "홀덤", cards: 2, streets: ["PREFLOP", "FLOP", "TURN", "RIVER"], draw: false },
+  plo4:   { label: "PLO4", cards: 4, streets: ["PREFLOP", "FLOP", "TURN", "RIVER"], draw: false },
+  plo5:   { label: "PLO5", cards: 5, streets: ["PREFLOP", "FLOP", "TURN", "RIVER"], draw: false },
+  plo6:   { label: "PLO6", cards: 6, streets: ["PREFLOP", "FLOP", "TURN", "RIVER"], draw: false },
+  td27:   { label: "2-7TD", cards: 5, streets: ["PREFLOP", "DRAW1", "DRAW2", "DRAW3"], draw: true },
+  tdA5:   { label: "A-5TD", cards: 5, streets: ["PREFLOP", "DRAW1", "DRAW2", "DRAW3"], draw: true },
+  badugi: { label: "Badugi", cards: 4, streets: ["PREFLOP", "DRAW1", "DRAW2", "DRAW3"], draw: true },
+  sd27:   { label: "2-7SD", cards: 5, streets: ["PREFLOP", "DRAW1"], draw: true },
+};
+const GAME_ORDER = ["holdem", "plo4", "plo5", "plo6", "td27", "tdA5", "badugi", "sd27"];
+const DEFAULT_GAME = "holdem";
+// 핸드(또는 게임타입)에 맞는 스트리트 배열. 구버전 핸드(streetList 없음)는 홀덤 기본.
+function streetsOf(handOrType) {
+  if (!handOrType) return STREETS;
+  if (Array.isArray(handOrType.streetList)) return handOrType.streetList;
+  if (typeof handOrType === "string") return GAME_TYPES[handOrType]?.streets || STREETS;
+  return GAME_TYPES[handOrType.gameType]?.streets || STREETS;
+}
+
+// 각 스트리트에서 보여줄 누적 보드 장수 (플랍3·턴4·리버5)
+const BOARD_COUNT_BY_STREET = { FLOP: 3, TURN: 4, RIVER: 5 };
+// 보드 카드를 "Q J 3" 처럼 (랭크만, 미입력/미지정은 ?) 표기. count = 노출 장수.
+function boardToText(board, count) {
+  if (!board) return "";
+  const cards = [];
+  for (let i = 0; i < count; i++) {
+    cards.push(cardLabel(board[i]));
+  }
+  return cards.join(" ");
+}
 
 const ACTIONS = [
   { id: "open",   label: "OPEN",   color: "#f59e0b" },
@@ -52,13 +88,8 @@ const RANK_KEYS = ["a", "2", "3", "4", "5", "6", "7", "8", "9", "t", "j", "q", "
 // 미입력 슬롯 placeholder (확정 시 빈칸을 이걸로 채움). 'Ax'(랭크O 슈트X)와 구분되는 단일 문자.
 const CARD_UNKNOWN = "?";
 
-// 홀카드 장수 모드. UI에는 2/4/5/6만 노출, 7은 내부 허용(스터드 대비).
-const CARD_COUNT_OPTIONS = [
-  { count: 2, label: "홀덤" },
-  { count: 4, label: "PLO4" },
-  { count: 5, label: "PLO5" },
-  { count: 6, label: "PLO6" },
-];
+// 홀카드 장수: gameType에서 파생(GAME_TYPES[].cards). 아래 상수는 구버전
+// pt_cardcount 마이그레이션(clampCardCount)에만 사용. 7은 내부 허용(스터드 대비).
 const DEFAULT_CARD_COUNT = 2;
 const MIN_CARD_COUNT = 2;
 const MAX_CARD_COUNT = 7;
@@ -103,14 +134,23 @@ const SUITS = [
 // 카드 랭크 강도 (높을수록 강함)
 const RANK_VALUE = { A: 14, K: 13, Q: 12, J: 11, T: 10, "9":9, "8":8, "7":7, "6":6, "5":5, "4":4, "3":3, "2":2 };
 
-// 홀카드를 "KQ" "JT" 같은 표기로 변환 (높은 랭크 먼저)
+const SUIT_SYMBOL = { s: "♠", h: "♥", d: "♦", c: "♣" };
+const SUIT_COLOR = { s: "#0f172a", h: "#dc2626", d: "#2563eb", c: "#16a34a" }; // 4색 구분(스페이드 검정·하트 빨강·다이아 파랑·클럽 초록)
+// 카드 1장 표기: 슈트가 실제로 정해졌으면 기호 붙임(Q♥), 아니면(placeholder 'x') 랭크만(Q). 미지정은 ?
+function cardLabel(c) {
+  if (!c || c === CARD_UNKNOWN) return "?";
+  const sym = SUIT_SYMBOL[c[1]];
+  return sym ? c[0] + sym : c[0];
+}
+
+// 홀카드를 "KQ" "JT" 같은 표기로 변환 (높은 랭크 먼저). 슈트 입력됐으면 기호 표시(K♥Q♠)
 function cardsToText(cards) {
   if (!cards) return "";
   const valid = cards.filter(Boolean);
   if (valid.length === 0) return "";
   // 랭크 강도로 정렬 (높은 것 먼저)
   const sorted = [...valid].sort((a, b) => (RANK_VALUE[b[0]] || 0) - (RANK_VALUE[a[0]] || 0));
-  return sorted.map(c => c[0]).join("");
+  return sorted.map(cardLabel).join("");
 }
 
 // 같은 카드 표기(cardsToText)를 2명 이상이 가진 seat들의 Set (로그에서 이름 병기 구분용)
@@ -214,8 +254,10 @@ function handToText(hand) {
 
   // 같은 카드 표기를 2명 이상이 가지면, 그 seat들은 이름도 함께 표시(구분용)
   const dupCardSeats = computeDupCardSeats(hand);
+  const SL = streetsOf(hand);
+  const isDrawGame = !!GAME_TYPES[hand.gameType]?.draw;
 
-  STREETS.forEach(street => {
+  SL.forEach((street, sIdx) => {
     const rawEntries = hand.streets[street] || [];
     const isPreflop = street === "PREFLOP";
 
@@ -228,10 +270,12 @@ function handToText(hand) {
       entries = rawEntries;
     }
 
+    const isDrawStreet = isDrawGame && sIdx >= 1;
     const parts = [];
     const seenSeats = new Set();
     entries.forEach((e, i) => {
-      const cardsText = cardsToText(hand.holeCards?.[e.seatId]);
+      // 카드: 그 스트리트 시점 핸드 (드로우면 라운드 스냅샷, 아니면 딜/홀카드)
+      const handText = cardsToText(handAtStreet(hand, e.seatId, sIdx));
       const label = getActionLabel(entries, i);
       const isFirstForPlayer = !seenSeats.has(e.seatId);
       seenSeats.add(e.seatId);
@@ -239,15 +283,17 @@ function handToText(hand) {
       let prefix = "";
       if (isPreflop && isFirstForPlayer) {
         prefix = `${posLabel(e.position)} ${e.playerName} `;
-        if (cardsText) prefix += `${cardsText} `;
-        else prefix += "(?) ";
-      } else if (cardsText) {
-        // 같은 카드를 든 사람이 둘 이상이면 이름도 붙여 구분
-        if (dupCardSeats.has(e.seatId)) {
-          prefix = `${e.playerName} ${cardsText} `;
-        } else {
-          prefix = `${cardsText} `;
-        }
+        prefix += handText ? `${handText} ` : "(?) ";
+      } else if (isDrawStreet && isFirstForPlayer) {
+        // 드로우 첫 액션: 이름 + 교환수(PAT/ND) + 핸드
+        const di = drawInfoText(hand, e.seatId, sIdx);
+        prefix = `${e.playerName} ${di}${handText ? " " + handText : ""} `;
+      } else if (isPreflop || isDrawStreet) {
+        // 드로우/프리 후속 액션: 이름만
+        prefix = `${e.playerName} `;
+      } else if (handText) {
+        // 비드로우 포스트플랍: 같은 카드 2명+면 이름 병기
+        prefix = dupCardSeats.has(e.seatId) ? `${e.playerName} ${handText} ` : `${handText} `;
       } else {
         prefix = `${e.playerName} `;
       }
@@ -255,11 +301,33 @@ function handToText(hand) {
     });
     if (showAllFold) parts.push("ALL-FOLD");
 
-    lines.push(`${STREET_SHORT[street]}: ${parts.join(" / ")}`);
+    if (isPreflop) {
+      lines.push(`${STREET_SHORT[street]}: ${parts.join(" / ")}`);
+    } else if (isDrawStreet) {
+      // 드로우 스트리트: 항상 표시(빈 줄은 라벨만). 첫 액션에 교환수+핸드 포함.
+      lines.push(`${STREET_SHORT[street]}: ${parts.join(" / ")}`.trimEnd());
+    } else {
+      // 비드로우 포스트플랍: 항상 표시. 보드 입력됐으면 보드 줄(+액션 줄), 아니면 라벨+액션 한 줄.
+      const count = BOARD_COUNT_BY_STREET[street];
+      const hasBoard = (hand.board || []).slice(0, count).some(c => c && c !== CARD_UNKNOWN);
+      const hasActions = parts.length > 0;
+      if (hasBoard) {
+        lines.push(`${STREET_SHORT[street]}: ${boardToText(hand.board, count)}`);
+        if (hasActions) lines.push(parts.join(" / "));
+      } else {
+        lines.push(`${STREET_SHORT[street]}: ${parts.join(" / ")}`.trimEnd());
+      }
+    }
   });
 
   lines.push("=".repeat(13));
-  lines.push(`Winner: ${hand.winnerName || "—"}`);
+  // Winner: 이름 + 최종 핸드 (드로우=마지막 스냅샷, 비드로우=딜/홀카드). 스플릿은 이름만.
+  let winnerLine = `Winner: ${hand.winnerName || "—"}`;
+  if (hand.winnerSeatId != null && !hand.isSplit) {
+    const wh = cardsToText(handAtStreet(hand, hand.winnerSeatId, SL.length - 1));
+    if (wh) winnerLine += ` ${wh}`;
+  }
+  lines.push(winnerLine);
 
   return lines.join("\n");
 }
@@ -398,15 +466,16 @@ function advanceButton(seatsInOrder, buttonSeatId) {
 // 현재 스트리트에서 폴드/올인하지 않은(=액션 가능한) 플레이어
 function computeActionablePlayers(hand, streetIdx) {
   if (!hand) return [];
+  const SL = streetsOf(hand);
   const foldedIds = new Set();
   const allInIds = new Set();
   for (let i = 0; i < streetIdx; i++) {
-    hand.streets[STREETS[i]].forEach(a => {
+    (hand.streets[SL[i]] || []).forEach(a => {
       if (a.action === "fold") foldedIds.add(a.seatId);
       if (a.action === "allin") allInIds.add(a.seatId);
     });
   }
-  hand.streets[STREETS[streetIdx]].forEach(a => {
+  hand.streets[SL[streetIdx]].forEach(a => {
     if (a.action === "fold") foldedIds.add(a.seatId);
     if (a.action === "allin") allInIds.add(a.seatId);
   });
@@ -437,7 +506,7 @@ function computeSortedActionable(hand, streetIdx) {
 // 다음 액션할 플레이어 (없으면 null = 라운드 완료)
 function computeNextToAct(hand, streetIdx) {
   if (!hand) return null;
-  const streetActions = hand.streets[STREETS[streetIdx]];
+  const streetActions = hand.streets[streetsOf(hand)[streetIdx]];
   const actionable = computeSortedActionable(hand, streetIdx);
 
   let lastAggressorIdx = -1;
@@ -484,6 +553,49 @@ function computeNextToAct(hand, streetIdx) {
     }
   }
   return null;
+}
+
+// ── 드로우 게임 헬퍼 ───────────────────────────────────────────────────────
+// 해당 스트리트가 드로우(교환) 스트리트인가 (PREFLOP=프리드로우 베팅이라 제외)
+function streetIsDraw(hand, streetIdx) {
+  if (!hand || !GAME_TYPES[hand.gameType]?.draw) return false;
+  return streetIdx >= 1;
+}
+// seatId의 streetIdx 시점 핸드: 가장 최근 드로우 스냅샷, 없으면 딜 핸드
+function handAtStreet(hand, seatId, streetIdx) {
+  if (!hand) return null;
+  const SL = streetsOf(hand);
+  for (let k = streetIdx; k >= 1; k--) {
+    const snap = hand.roundHole?.[SL[k]]?.[seatId];
+    if (snap && snap.length) return snap;
+  }
+  return hand.holeCards?.[seatId] || null;
+}
+// 바뀐 카드 수 = newHand 중 prevHand에 없는 카드(멀티셋 차). prev 없으면 채워진 장수.
+function drawCount(prevHand, newHand) {
+  if (!newHand) return 0;
+  const filled = newHand.filter(c => c && c !== CARD_UNKNOWN);
+  if (!prevHand) return filled.length;
+  const pool = prevHand.filter(Boolean).map(c => c);
+  let changed = 0;
+  for (const c of newHand) {
+    if (!c || c === CARD_UNKNOWN) continue;
+    const idx = pool.indexOf(c);
+    if (idx >= 0) pool.splice(idx, 1);
+    else changed++;
+  }
+  return changed;
+}
+// 드로우 스트리트 교환 라벨: "PAT" | "3D". (이전 라운드 핸드 대비)
+function drawInfoText(hand, seatId, streetIdx) {
+  if (!streetIsDraw(hand, streetIdx)) return "";
+  const prev = handAtStreet(hand, seatId, streetIdx - 1);
+  // 이전 라운드 핸드가 미상(딜 미입력 등)이면 교환수를 알 수 없음 → PAT 취급
+  const prevReal = (prev || []).filter(c => c && c !== CARD_UNKNOWN).length;
+  if (prevReal === 0) return "PAT";
+  const now = handAtStreet(hand, seatId, streetIdx);
+  const n = drawCount(prev, now);
+  return n === 0 ? "PAT" : `D${n}`;
 }
 
 // 두 자리의 내용(name/active/out)만 교체. id/position은 의자에 남음(포지션은 자리 기준 자동계산).
@@ -544,11 +656,12 @@ function AmountChip({ text, size = "sm" }) {
 
 // 액션 로그 한 항목 (포지션/이름/카드 + 라벨/N-BET + 금액 + 구분자). 3곳 공용.
 // size: "sm"(라이브 로그) | "md"(히스토리/리캡)
-function ActionEntry({ hand, entries, i, isPreflop, isFirstForPlayer, dupCardSeats, size = "sm" }) {
+function ActionEntry({ hand, entries, i, isPreflop, isFirstForPlayer, dupCardSeats, size = "sm", streetIdx = 0 }) {
   const e = entries[i];
-  const cardsText = cardsToText(hand.holeCards?.[e.seatId]);
+  const cardsText = cardsToText(handAtStreet(hand, e.seatId, streetIdx));
   const label = getActionLabel(entries, i);
   const isNBet = label && label.endsWith("-BET");
+  const isDrawStreet = streetIsDraw(hand, streetIdx);
   // 같은 카드 표기 2명+ 이면 이름 병기. 단 프리플랍 첫 액션은 이미 이름 있음.
   const showName = dupCardSeats?.has(e.seatId) && !(isPreflop && isFirstForPlayer);
   const nameSize = size === "md" ? 12 : 11;
@@ -556,25 +669,38 @@ function ActionEntry({ hand, entries, i, isPreflop, isFirstForPlayer, dupCardSea
   const wrapStyle = size === "md"
     ? { marginRight: 6, whiteSpace: "nowrap" }
     : { whiteSpace: "nowrap" };
+  const nameEl = (muted) => (
+    <span style={{ color: muted ? "#94a3b8" : "#e2e8f0", fontSize: nameSize, fontWeight: 700 }}>{e.playerName}</span>
+  );
+  const cardsEl = cardsText && (
+    <span style={{ color: "#fbbf24", fontSize: cardsSize, fontWeight: 900, fontFamily: MONO }}>{cardsText}</span>
+  );
+
+  let lead;
+  if (isPreflop && isFirstForPlayer) {
+    lead = (<>
+      <span style={{ color: "#10b981", fontSize: 11, fontWeight: 700 }}>{posLabel(e.position)}</span>{" "}
+      {nameEl(false)}{" "}{cardsEl}{cardsText && " "}
+    </>);
+  } else if (isDrawStreet && isFirstForPlayer) {
+    // 드로우 첫 액션: 이름 + 교환수(PAT/ND) + 핸드
+    lead = (<>
+      {nameEl(false)}{" "}
+      <span style={{ color: "#38bdf8", fontSize: cardsSize, fontWeight: 900, fontFamily: MONO }}>
+        {drawInfoText(hand, e.seatId, streetIdx)}
+      </span>{" "}{cardsEl}{cardsText && " "}
+    </>);
+  } else if (isPreflop || isDrawStreet) {
+    lead = <>{nameEl(true)}{" "}</>;
+  } else if (cardsText) {
+    lead = (<>{showName && <>{nameEl(true)}{" "}</>}{cardsEl}{" "}</>);
+  } else {
+    lead = <>{nameEl(true)}{" "}</>;
+  }
+
   return (
     <span style={wrapStyle}>
-      {isPreflop && isFirstForPlayer && (
-        <>
-          <span style={{ color: "#10b981", fontSize: 11, fontWeight: 700 }}>{posLabel(e.position)}</span>{" "}
-          <span style={{ color: "#e2e8f0", fontSize: nameSize, fontWeight: 700 }}>{e.playerName}</span>{" "}
-        </>
-      )}
-      {cardsText ? (
-        <>
-          {showName && (
-            <span style={{ color: "#e2e8f0", fontSize: nameSize, fontWeight: 700 }}>{e.playerName} </span>
-          )}
-          <span style={{ color: "#fbbf24", fontSize: cardsSize, fontWeight: 900, fontFamily: MONO }}>{cardsText}</span>
-        </>
-      ) : (
-        <span style={{ color: "#94a3b8", fontSize: 11 }}>{e.playerName}</span>
-      )}
-      {" "}
+      {lead}
       {isNBet ? (
         <span style={{
           background: "#ef4444" + "22", color: "#ef4444",
@@ -592,13 +718,14 @@ function ActionEntry({ hand, entries, i, isPreflop, isFirstForPlayer, dupCardSea
   );
 }
 
-// 한 스트리트의 액션들을 칩으로 렌더 (누적 로그용). 라벨(Pre/Flop/..) 포함.
-function StreetActionsInline({ hand, streetIdx, dupCardSeats }) {
-  const street = STREETS[streetIdx];
-  const rawEntries = hand.streets[street] || [];
-  if (rawEntries.length === 0) return null;
+// 한 스트리트 한 줄 렌더 (3곳 공용: 라이브 로그 sm / 히스토리·리캡 md).
+// 라벨 + (비드로우 보드) + ActionEntry들. 도달 안 한 스트리트는 null.
+function StreetLine({ hand, streetIdx, dupCardSeats, size = "sm", showEmpty = false }) {
+  const street = streetsOf(hand)[streetIdx];
+  const rawEntries = hand.streets?.[street] || [];
   const isPreflop = streetIdx === 0;
-  const isHeadsUp = hand.seats.length === 2;
+  const isDrawStreet = streetIsDraw(hand, streetIdx);
+  const isHeadsUp = (hand.seats?.length || 0) === 2;
 
   let entries, showAllFold = false;
   if (isPreflop) {
@@ -609,44 +736,104 @@ function StreetActionsInline({ hand, streetIdx, dupCardSeats }) {
     entries = rawEntries;
   }
 
-  const seenSeats = new Set();
+  const count = (!isPreflop && !isDrawStreet) ? BOARD_COUNT_BY_STREET[street] : 0;
+  const hasBoardCards = count > 0 && (hand.board || []).slice(0, count).some(c => c && c !== CARD_UNKNOWN);
+
+  // 스킵: showEmpty면 빈 스트리트도 라벨만 표시. 아니면 도달 안 한 스트리트 생략.
+  if (!showEmpty) {
+    if (isPreflop && entries.length === 0) return null;
+    if (!isPreflop && entries.length === 0 && !hasBoardCards) return null;
+  }
+
+  const dup = dupCardSeats || computeDupCardSeats(hand);
+  const seen = new Set();
   const items = entries.map((e, i) => {
-    const isFirstForPlayer = !seenSeats.has(e.seatId);
-    seenSeats.add(e.seatId);
+    const first = !seen.has(e.seatId);
+    seen.add(e.seatId);
     return (
-      <ActionEntry
-        key={i}
-        hand={hand} entries={entries} i={i}
-        isPreflop={isPreflop} isFirstForPlayer={isFirstForPlayer}
-        dupCardSeats={dupCardSeats} size="sm"
-      />
+      <ActionEntry key={i} hand={hand} entries={entries} i={i}
+        isPreflop={isPreflop} isFirstForPlayer={first}
+        dupCardSeats={dup} size={size} streetIdx={streetIdx} />
     );
   });
-
   if (showAllFold) {
     items.push(
       <span key="all-fold" style={{
         background: "#7e8ca0" + "22", color: "#94a3b8",
         border: "1px solid #7e8ca055", fontSize: 9, fontWeight: 900,
-        padding: "1px 6px", borderRadius: 4, letterSpacing: 1,
-        fontFamily: MONO,
+        padding: "1px 6px", borderRadius: 4, letterSpacing: 1, fontFamily: MONO,
       }}>ALL-FOLD</span>
     );
   }
 
+  const boardEl = hasBoardCards && (
+    <span style={{ color: "#e8eef5", fontSize: size === "md" ? 12 : 11, fontWeight: 800, letterSpacing: 1, marginRight: size === "md" ? 8 : 4 }}>
+      {boardToText(hand.board, count)}
+    </span>
+  );
+
+  if (size === "md") {
+    return (
+      <div style={{ marginBottom: 8, lineHeight: 1.8 }}>
+        <span style={{ color: "#7e8ca0", fontSize: 11, fontWeight: 700, letterSpacing: 2 }}>{STREET_SHORT[street]}:{" "}</span>
+        {boardEl}{items}
+      </div>
+    );
+  }
   return (
-    <div style={{
-      display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center",
-      fontSize: 11, marginBottom: 4,
-    }}>
-      <span style={{
-        color: "#64748b", fontWeight: 700, fontSize: 9,
-        minWidth: 34, letterSpacing: 1,
-      }}>{STREET_SHORT[street]}</span>
-      {items}
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center", fontSize: 11, marginBottom: 4 }}>
+      <span style={{ color: "#64748b", fontWeight: 700, fontSize: 9, minWidth: 34, letterSpacing: 1 }}>{STREET_SHORT[street]}</span>
+      {boardEl}{items}
     </div>
   );
 }
+
+// Winner 줄 (=====) + 이름 + 최종핸드. 히스토리/리캡 공용.
+function WinnerLine({ hand, size = "md" }) {
+  const SL = streetsOf(hand);
+  const wh = (hand.winnerSeatId != null && !hand.isSplit)
+    ? cardsToText(handAtStreet(hand, hand.winnerSeatId, SL.length - 1)) : "";
+  return (
+    <>
+      <div style={{ borderTop: "1px dashed #536583", marginTop: size === "md" ? 10 : 8, paddingTop: 8, color: "#7e8ca0", fontSize: 10, letterSpacing: 2 }}>
+        {"=".repeat(13)}
+      </div>
+      <div style={{ marginTop: 6 }}>
+        <span style={{ color: "#7e8ca0", fontSize: 11, letterSpacing: 2 }}>Winner: </span>
+        <span style={{ color: "#f59e0b", fontSize: size === "md" ? 14 : 13, fontWeight: 900 }}>{hand.winnerName || "—"}</span>
+        {wh && <span style={{ color: "#fbbf24", fontSize: size === "md" ? 14 : 13, fontWeight: 900, fontFamily: MONO, marginLeft: 6 }}>{wh}</span>}
+      </div>
+    </>
+  );
+}
+
+// 핸드 전체 로그 (히스토리/리캡 공용): 비드로우 Cards 요약 + 스트리트들 + Winner.
+function HandLog({ hand, size = "md" }) {
+  const isDraw = !!GAME_TYPES[hand.gameType]?.draw;
+  const dup = computeDupCardSeats(hand);
+  const showCards = !isDraw && Object.entries(hand.holeCards || {}).filter(([_, c]) => (c || []).some(Boolean)).length > 0;
+  return (
+    <>
+      {showCards && (
+        <div style={{ marginBottom: 10 }}>
+          <span style={{ color: "#7e8ca0", fontSize: 10, letterSpacing: 2 }}>Cards: </span>
+          {hand.seats.filter(s => hand.holeCards?.[s.id]?.some(Boolean)).map(s => (
+            <span key={s.id} style={{ marginRight: 10, display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ color: "#94a3b8", fontSize: 11 }}>{s.name}</span>
+              {hand.holeCards[s.id].map((c, ci) => <CardChip key={ci} card={c} size="sm" />)}
+            </span>
+          ))}
+        </div>
+      )}
+      {streetsOf(hand).map((s, i) => (
+        <StreetLine key={s} hand={hand} streetIdx={i} dupCardSeats={dup} size={size} showEmpty />
+      ))}
+      <WinnerLine hand={hand} size={size} />
+    </>
+  );
+}
+
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 카드 시각화
@@ -710,6 +897,7 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
   // 최신 값을 키보드 입력에서 stale 없이 읽기 위한 ref (부수효과를 setState 업데이터 밖으로)
   const activeSlotRef = React.useRef(0);
   const picksRef = React.useRef([]);
+  const pendingSuitSlotRef = React.useRef(null); // 직전에 랭크 넣은 슬롯 (슈트키 대상)
   activeSlotRef.current = activeSlot;
   picksRef.current = picks;
 
@@ -742,6 +930,24 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
     setActiveSlot(na === -1 ? slot : na);
   };
 
+  // 랭크 넣고 그 슬롯을 "슈트 대기"로 기억 (직후 슈트키/버튼이 이 슬롯에 적용)
+  const placeRank = (slotArg, rank) => {
+    const slot = slotArg != null ? slotArg : activeSlotRef.current;
+    fillSlot(slot, rank + "x");
+    pendingSuitSlotRef.current = slot;
+  };
+
+  // 슈트 지정: 직전 랭크 슬롯의 슈트를 교체 (랭크 있어야 적용). pending 유지 → 다른 슈트로 정정 가능
+  const setSuit = (suitId) => {
+    const slot = pendingSuitSlotRef.current;
+    if (slot == null) return;
+    const cur = picksRef.current[slot];
+    if (!cur || cur === CARD_UNKNOWN) return;
+    const next = picksRef.current.map((c, i) => (i === slot ? cur[0] + suitId : c));
+    picksRef.current = next;
+    setPicks(next);
+  };
+
   // 카드 모달 키보드 입력
   useEffect(() => {
     if (!open) return;
@@ -750,10 +956,12 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
       if (k === "enter") { commit(picksRef.current); return; }
       if (k === "escape") { onClose(); return; }
       // ? 입력: '0' / '/' / '?'
-      if (k === "0" || k === "/" || k === "?") { fillSlot(null, CARD_UNKNOWN); return; }
+      if (k === "0" || k === "/" || k === "?") { fillSlot(null, CARD_UNKNOWN); pendingSuitSlotRef.current = null; return; }
+      // 슈트키: 직전 랭크 카드에 문양 지정 (랭크키와 안 겹침)
+      if (k === "h" || k === "d" || k === "c" || k === "s") { setSuit(k); return; }
       const lookupKey = k === "1" ? "a" : k; // '1' 도 A
       const gi = RANK_KEYS.indexOf(lookupKey);
-      if (gi >= 0) fillSlot(null, RANK_GRID[gi] + "x"); // 슈트 placeholder 'x'
+      if (gi >= 0) placeRank(null, RANK_GRID[gi]); // 슈트 미지정(placeholder 'x')
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
@@ -761,8 +969,8 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
 
   if (!open) return null;
 
-  const pickRank = (rank) => fillSlot(activeSlot, rank + "x");
-  const pickUnknown = () => fillSlot(activeSlot, CARD_UNKNOWN);
+  const pickRank = (rank) => placeRank(activeSlot, rank);
+  const pickUnknown = () => { fillSlot(activeSlot, CARD_UNKNOWN); pendingSuitSlotRef.current = null; };
 
   const confirm = () => commit(picks);
 
@@ -804,7 +1012,7 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
         <div style={{
           color: "#10b981", fontSize: 11, letterSpacing: 2, marginBottom: 14,
           textAlign: "center",
-        }}>홀카드 선택 (랭크만) · {cardCount}장</div>
+        }}>카드 선택 · 랭크 + 문양(선택) · {cardCount}장</div>
 
         {/* 선택된 카드 미리보기 (cardCount장) */}
         <div style={{
@@ -834,7 +1042,12 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
                   animation: isActive && !p ? "cardPulse 1.2s infinite" : "none",
                 }}
               >
-                {p ? p[0] : (
+                {p ? (
+                  <span style={{ color: SUIT_COLOR[p[1]] || "#0f172a" }}>
+                    {p === CARD_UNKNOWN ? "?" : p[0]}
+                    {SUIT_SYMBOL[p[1]] ? <span style={{ fontSize: Math.round(pvFont * 0.6) }}>{SUIT_SYMBOL[p[1]]}</span> : null}
+                  </span>
+                ) : (
                   <span style={{ color: "#1a2d45", fontSize: Math.round(pvFont * 0.66) }}>?</span>
                 )}
               </button>
@@ -905,6 +1118,28 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
             }}>0</span>
             ?
           </button>
+        </div>
+
+        {/* 슈트 선택 (선택사항): 랭크 누른 직후 누르면 그 카드에 문양. 안 누르면 랭크만 */}
+        <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+          {SUITS.map(s => (
+            <button key={s.id}
+              onClick={() => setSuit(s.id)}
+              title={`${s.label} (단축키 ${s.id.toUpperCase()})`}
+              style={{
+                flex: 1, padding: "8px 0",
+                background: "#fafafa", border: "2px solid transparent",
+                borderRadius: 8, cursor: "pointer",
+                color: SUIT_COLOR[s.id], fontSize: 20, fontWeight: 900,
+                fontFamily: MONO, position: "relative",
+              }}>
+              <span style={{
+                position: "absolute", top: 2, left: 5,
+                fontSize: 9, color: "#94a3b8", opacity: .7, fontWeight: 700,
+              }}>{s.id.toUpperCase()}</span>
+              {s.label}
+            </button>
+          ))}
         </div>
 
         {/* 하단 버튼 */}
@@ -1019,82 +1254,7 @@ function HandHistoryCard({ hand }) {
           padding: "12px 14px 14px",
           fontFamily: MONO,
         }}>
-          {/* 홀카드 표시 */}
-          {Object.entries(hand.holeCards || {}).filter(([_, c]) => c.some(Boolean)).length > 0 && (
-            <div style={{ marginBottom: 10 }}>
-              <span style={{ color: "#7e8ca0", fontSize: 10, letterSpacing: 2 }}>Cards: </span>
-              {hand.seats.filter(s => hand.holeCards?.[s.id]?.some(Boolean)).map(s => (
-                <span key={s.id} style={{ marginRight: 10, display: "inline-flex", alignItems: "center", gap: 4 }}>
-                  <span style={{ color: "#94a3b8", fontSize: 11 }}>{s.name}</span>
-                  {hand.holeCards[s.id].map((c, ci) => (
-                    <CardChip key={ci} card={c} size="sm" />
-                  ))}
-                </span>
-              ))}
-            </div>
-          )}
-
-          {STREETS.map(street => {
-            const rawEntries = hand.streets[street] || [];
-            const isPreflop = street === "PREFLOP";
-            const isHeadsUp = (hand.seats?.length || 0) === 2;
-
-            let entries, showAllFold = false;
-            if (isPreflop) {
-              const r = processPreflopEntries(rawEntries, isHeadsUp);
-              entries = r.entries;
-              showAllFold = preflopEndedByFold(hand);
-            } else {
-              entries = rawEntries;
-            }
-
-            return (
-              <div key={street} style={{ marginBottom: 8, lineHeight: 1.8 }}>
-                <span style={{
-                  color: "#7e8ca0", fontSize: 11, fontWeight: 700, letterSpacing: 2,
-                }}>
-                  {STREET_SHORT[street]}:{" "}
-                </span>
-                {(() => {
-                  const dupCardSeats = computeDupCardSeats(hand);
-                  const seenSeats = new Set();
-                  return entries.map((e, i) => {
-                    const isFirstForPlayer = !seenSeats.has(e.seatId);
-                    seenSeats.add(e.seatId);
-                    return (
-                      <ActionEntry
-                        key={i}
-                        hand={hand} entries={entries} i={i}
-                        isPreflop={isPreflop} isFirstForPlayer={isFirstForPlayer}
-                        dupCardSeats={dupCardSeats} size="md"
-                      />
-                    );
-                  });
-                })()}
-                {showAllFold && (
-                  <span style={{
-                    background: "#7e8ca0" + "22",
-                    color: "#94a3b8",
-                    border: "1px solid #7e8ca055",
-                    fontSize: 9, fontWeight: 900,
-                    padding: "1px 6px", borderRadius: 4,
-                    letterSpacing: 1, fontFamily: MONO,
-                  }}>ALL-FOLD</span>
-                )}
-              </div>
-            );
-          })}
-          <div style={{
-            borderTop: "1px dashed #536583",
-            marginTop: 8, paddingTop: 8,
-            color: "#7e8ca0", fontSize: 10, letterSpacing: 2,
-          }}>{"=".repeat(13)}</div>
-          <div style={{ marginTop: 6 }}>
-            <span style={{ color: "#7e8ca0", fontSize: 11, letterSpacing: 2 }}>Winner: </span>
-            <span style={{ color: "#f59e0b", fontSize: 13, fontWeight: 900 }}>
-              {hand.winnerName || "—"}
-            </span>
-          </div>
+          <HandLog hand={hand} size="md" />
         </div>
       )}
     </div>
@@ -1187,74 +1347,15 @@ function RecapModal({ hand, onClose, onReopen }) {
           borderRadius: 10, padding: 14,
           marginBottom: 12,
         }}>
-          {STREETS.map(street => {
-            const rawEntries = hand.streets[street] || [];
-            const isPreflop = street === "PREFLOP";
-            const isHeadsUp = (hand.seats?.length || 0) === 2;
-
-            let entries, showAllFold = false;
-            if (isPreflop) {
-              const r = processPreflopEntries(rawEntries, isHeadsUp);
-              entries = r.entries;
-              showAllFold = preflopEndedByFold(hand);
-            } else {
-              entries = rawEntries;
-            }
-
-            return (
-              <div key={street} style={{ marginBottom: 8, lineHeight: 1.8 }}>
-                <span style={{
-                  color: "#7e8ca0", fontSize: 11, fontWeight: 700, letterSpacing: 2,
-                }}>
-                  {STREET_SHORT[street]}:{" "}
-                </span>
-                {(() => {
-                  const dupCardSeats = computeDupCardSeats(hand);
-                  const seenSeats = new Set();
-                  return entries.map((e, i) => {
-                    const isFirstForPlayer = !seenSeats.has(e.seatId);
-                    seenSeats.add(e.seatId);
-                    return (
-                      <ActionEntry
-                        key={i}
-                        hand={hand} entries={entries} i={i}
-                        isPreflop={isPreflop} isFirstForPlayer={isFirstForPlayer}
-                        dupCardSeats={dupCardSeats} size="md"
-                      />
-                    );
-                  });
-                })()}
-                {showAllFold && (
-                  <span style={{
-                    background: "#7e8ca0" + "22",
-                    color: "#94a3b8",
-                    border: "1px solid #7e8ca055",
-                    fontSize: 9, fontWeight: 900,
-                    padding: "1px 6px", borderRadius: 4,
-                    letterSpacing: 1,
-                  }}>ALL-FOLD</span>
-                )}
-              </div>
-            );
-          })}
-          <div style={{
-            borderTop: "1px dashed #536583",
-            marginTop: 10, paddingTop: 8,
-            color: "#7e8ca0", fontSize: 10, letterSpacing: 2,
-          }}>{"=".repeat(13)}</div>
-          <div style={{ marginTop: 6 }}>
-            <span style={{ color: "#7e8ca0", fontSize: 11, letterSpacing: 2 }}>Winner: </span>
-            <span style={{ color: "#f59e0b", fontSize: 14, fontWeight: 900 }}>
-              {hand.winnerName}
-            </span>
-          </div>
+          <HandLog hand={hand} size="md" />
         </div>
 
         {/* 하단 버튼 */}
         {onReopen && (() => {
+          const SL = streetsOf(hand);
           let lastActed = 0;
-          for (let i = 0; i < STREETS.length; i++) {
-            if (hand.streets[STREETS[i]].length > 0) lastActed = i;
+          for (let i = 0; i < SL.length; i++) {
+            if ((hand.streets[SL[i]] || []).length > 0) lastActed = i;
           }
           return (
             <button onClick={onReopen} style={{
@@ -1263,7 +1364,7 @@ function RecapModal({ hand, onClose, onReopen }) {
               borderRadius: 10, color: "#10b981",
               fontSize: 11, fontWeight: 700, letterSpacing: 1, cursor: "pointer",
               fontFamily: MONO,
-            }}>↶ {STREET_SHORT[STREETS[lastActed]]} 로 되돌리기</button>
+            }}>↶ {STREET_SHORT[SL[lastActed]]} 로 되돌리기</button>
           );
         })()}
         <div style={{ display: "flex", gap: 8 }}>
@@ -1320,9 +1421,16 @@ export default function App() {
   const [activeView, setActiveView] = useState("table");
   const [showWinnerPicker, setShowWinnerPicker] = useState(false);
   const [selectedWinners, setSelectedWinners] = useState([]); // 다중 위너 선택용 seatId 배열
-  const [cardPickerFor, setCardPickerFor] = useState(null); // { seatId }
+  const [cardPickerFor, setCardPickerFor] = useState(null); // { seatId } | { board } | { showdown } | { edit }
   const [recapHand, setRecapHand] = useState(null); // 방금 끝난 핸드를 모달로 보여줌
-  const [holeCardCount, setHoleCardCount] = useState(() => clampCardCount(loadFromStorage("pt_cardcount", DEFAULT_CARD_COUNT)));
+  const [gameType, setGameType] = useState(() => {
+    const g = loadFromStorage("pt_gametype", null);
+    if (g && GAME_TYPES[g]) return g;
+    // 구버전: 저장된 카드 장수로 홀덤/PLO 추론
+    const cc = clampCardCount(loadFromStorage("pt_cardcount", DEFAULT_CARD_COUNT));
+    return { 2: "holdem", 4: "plo4", 5: "plo5", 6: "plo6" }[cc] || "holdem";
+  });
+  const holeCardCount = GAME_TYPES[gameType]?.cards || DEFAULT_CARD_COUNT;
   const [betAmountInput, setBetAmountInput] = useState(""); // 베팅 금액 숫자부분
   const [betUnit, setBetUnit] = useState("k"); // "" | "k" | "m", 핸드마다 k로 리셋
   // 키보드 핸들러(effect 클로저)에서 stale 없이 현재 금액을 읽기 위한 ref
@@ -1346,16 +1454,16 @@ export default function App() {
     try { window.localStorage.setItem("pt_button", JSON.stringify(buttonSeatId)); } catch {}
   }, [buttonSeatId]);
 
-  // 홀카드 장수 저장
+  // 게임 타입 저장
   useEffect(() => {
-    try { window.localStorage.setItem("pt_cardcount", JSON.stringify(holeCardCount)); } catch {}
-  }, [holeCardCount]);
+    try { window.localStorage.setItem("pt_gametype", JSON.stringify(gameType)); } catch {}
+  }, [gameType]);
 
-  // 진행 중 핸드(또는 리캡 떠 있을 때)는 장수 변경 잠금 → 편집 가능한 핸드와 항상 일치 보장
+  // 진행 중 핸드(또는 리캡 떠 있을 때)는 게임 변경 잠금 → 편집 가능한 핸드와 항상 일치 보장
   const cardCountLocked = !!currentHand || !!recapHand;
-  const changeCardCount = (n) => {
+  const changeGameType = (id) => {
     if (cardCountLocked) return;
-    setHoleCardCount(clampCardCount(n));
+    if (GAME_TYPES[id]) setGameType(id);
   };
 
   // 좌석 탭: 일반=편집모달, 스왑모드=두 자리의 내용(name/active/out) 교체
@@ -1409,14 +1517,22 @@ export default function App() {
       positions[s.id] ? { ...s, position: positions[s.id] } : s
     ));
 
+    const sl = GAME_TYPES[gameType]?.streets || STREETS;
+    const emptyStreets = {};
+    sl.forEach(s => { emptyStreets[s] = []; });
+
     setCurrentHand({
       id: Date.now(),
       number: hands.length + 1,
       seats: handSeats,
       buttonSeatId: btn,
       dead,
-      streets: { PREFLOP: [], FLOP: [], TURN: [], RIVER: [] },
+      gameType,
+      streetList: sl,
+      streets: emptyStreets,
       holeCards: {},
+      roundHole: {}, // 드로우 후 라운드별 핸드 스냅샷 { streetKey: { seatId: [cards] } }
+      board: [null, null, null, null, null], // 홀덤류: 플랍0~2, 턴3, 리버4 (드로우는 미사용)
       cardCount: holeCardCount,
       winner: null,
       startedAt: new Date().toLocaleTimeString("ko-KR"),
@@ -1433,7 +1549,8 @@ export default function App() {
   // ── 액션 기록 ────────────────────────────────────────────────────────────
   const logAction = (seatId, actionId, amountText = null) => {
     if (!currentHand) return;
-    const street = STREETS[currentStreet];
+    const SL = streetsOf(currentHand);
+    const street = SL[currentStreet];
     const seat = currentHand.seats.find(s => s.id === seatId);
     // 사이징 액션이고 금액이 있으면 기록
     const amt = (AMOUNT_ACTIONS.has(actionId) && amountText) ? amountText : undefined;
@@ -1444,7 +1561,7 @@ export default function App() {
         streets: {
           ...prev.streets,
           [street]: [
-            ...prev.streets[street],
+            ...(prev.streets[street] || []),
             { seatId, playerName: seat.name, position: seat.position, action: actionId, amountText: amt },
           ],
         },
@@ -1455,7 +1572,7 @@ export default function App() {
       if (actionId === "fold") {
         const foldedIds = new Set();
         for (let i = 0; i <= currentStreet; i++) {
-          updated.streets[STREETS[i]].forEach(a => {
+          (updated.streets[SL[i]] || []).forEach(a => {
             if (a.action === "fold") foldedIds.add(a.seatId);
           });
         }
@@ -1522,8 +1639,8 @@ export default function App() {
         );
         const posOf = id => positions[id];
         const newStreets = {};
-        for (const st of STREETS) {
-          newStreets[st] = prev.streets[st].map(a =>
+        for (const st of streetsOf(prev)) {
+          newStreets[st] = (prev.streets[st] || []).map(a =>
             posOf(a.seatId) ? { ...a, position: posOf(a.seatId) } : a
           );
         }
@@ -1554,8 +1671,8 @@ export default function App() {
           : s
       );
       const newStreets = {};
-      for (const st of STREETS) {
-        newStreets[st] = prev.streets[st].map(a => ({ ...a, position: remap(a.position) }));
+      for (const st of streetsOf(prev)) {
+        newStreets[st] = (prev.streets[st] || []).map(a => ({ ...a, position: remap(a.position) }));
       }
       return { ...prev, seats: newSeats, streets: newStreets };
     });
@@ -1564,12 +1681,12 @@ export default function App() {
   // ── 마지막 액션 되돌리기 (실수 정정용) ──────────────────────────────────
   const undoLastAction = () => {
     if (!currentHand) return;
-    const street = STREETS[currentStreet];
+    const street = streetsOf(currentHand)[currentStreet];
     setCurrentHand(prev => ({
       ...prev,
       streets: {
         ...prev.streets,
-        [street]: prev.streets[street].slice(0, -1),
+        [street]: (prev.streets[street] || []).slice(0, -1),
       },
     }));
   };
@@ -1586,7 +1703,58 @@ export default function App() {
   // 카드 모달용 안정화 콜백 (모달 keydown effect 재등록 최소화)
   const closeCardPicker = useCallback(() => setCardPickerFor(null), []);
   const handleCardPick = useCallback((cards) => {
-    if (cardPickerFor) setHoleCards(cardPickerFor.seatId, cards);
+    if (!cardPickerFor) return;
+    if (cardPickerFor.board) {
+      const street = cardPickerFor.board;
+      const count = BOARD_COUNT_BY_STREET[street]; // 누적: 플랍3·턴4·리버5
+      setCurrentHand(prev => {
+        if (!prev) return prev;
+        const board = [...(prev.board || [null, null, null, null, null])];
+        for (let i = 0; i < count; i++) board[i] = cards[i] ?? null;
+        return { ...prev, board };
+      });
+      setCardPickerFor(null);
+    } else if (cardPickerFor.showdown) {
+      // 쇼다운 최종핸드 확정. 드로우=마지막 스트리트 스냅샷, 비드로우=홀카드.
+      const { seatId } = cardPickerFor.showdown;
+      setCurrentHand(prev => {
+        if (!prev) return prev;
+        if (GAME_TYPES[prev.gameType]?.draw) {
+          const SL = streetsOf(prev);
+          const lastStreet = SL[SL.length - 1];
+          return {
+            ...prev,
+            roundHole: {
+              ...prev.roundHole,
+              [lastStreet]: { ...(prev.roundHole?.[lastStreet] || {}), [seatId]: cards },
+            },
+          };
+        }
+        return { ...prev, holeCards: { ...prev.holeCards, [seatId]: cards } };
+      });
+      setCardPickerFor(null);
+    } else if (cardPickerFor.edit) {
+      // 언제든 핸드 수정: street0=딜(holeCards), 드로우 스트리트=그 라운드 스냅샷.
+      const { seatId, streetIdx } = cardPickerFor.edit;
+      setCurrentHand(prev => {
+        if (!prev) return prev;
+        if (streetIdx === 0 || !GAME_TYPES[prev.gameType]?.draw) {
+          return { ...prev, holeCards: { ...prev.holeCards, [seatId]: cards } };
+        }
+        const SL = streetsOf(prev);
+        const street = SL[streetIdx];
+        return {
+          ...prev,
+          roundHole: {
+            ...prev.roundHole,
+            [street]: { ...(prev.roundHole?.[street] || {}), [seatId]: cards },
+          },
+        };
+      });
+      setCardPickerFor(null);
+    } else {
+      setHoleCards(cardPickerFor.seatId, cards);
+    }
   }, [cardPickerFor, setHoleCards]);
 
   // ── 살아있는 플레이어 계산 ────────────────────────────────────────────────
@@ -1594,9 +1762,10 @@ export default function App() {
   const getAlivePlayers = (atStreetIdx) => {
     if (!currentHand) return [];
     const foldedIds = new Set();
+    const SL = streetsOf(currentHand);
     for (let i = 0; i <= atStreetIdx; i++) {
-      const street = STREETS[i];
-      currentHand.streets[street].forEach(a => {
+      const street = SL[i];
+      (currentHand.streets[street] || []).forEach(a => {
         if (a.action === "fold") foldedIds.add(a.seatId);
       });
     }
@@ -1620,16 +1789,17 @@ export default function App() {
 
   // ── 스트리트 진행 ─────────────────────────────────────────────────────────
   const nextStreet = () => {
+    const lastIdx = streetsOf(currentHand).length - 1;
     // 액션 가능한 사람이 1명 이하면 (모두 올인 or 1명만 살아남음)
     // → 남은 스트리트 건너뛰고 위너 선택
     const actionable = getActionablePlayers();
     if (actionable.length <= 1) {
-      // 리버까지 모든 빈 스트리트 통과
-      setCurrentStreet(3);
+      // 마지막 스트리트까지 모든 빈 스트리트 통과
+      setCurrentStreet(lastIdx);
       setShowWinnerPicker(true);
       return;
     }
-    if (currentStreet < 3) {
+    if (currentStreet < lastIdx) {
       setCurrentStreet(s => s + 1);
     } else {
       setShowWinnerPicker(true);
@@ -1639,7 +1809,7 @@ export default function App() {
   // ── 액션 가용성 체크 (UI 버튼과 단축키 공용) ─────────────────────────────
   const isActionDisabled = (actionId, player) => {
     if (!currentHand || !player) return true;
-    const streetActions = currentHand.streets[currentStreetName];
+    const streetActions = currentHand.streets[currentStreetName] || [];
     const someoneOpened = streetActions.some(a => a.action === "open" || a.action === "raise" || a.action === "allin");
     const someoneBet = streetActions.some(a => a.action === "bet" || a.action === "raise" || a.action === "allin");
     const lastAggressive = [...streetActions].reverse()
@@ -1755,6 +1925,7 @@ export default function App() {
       ...currentHand,
       winnerName,
       winnerNames: names,
+      winnerSeatId: names.length === 1 ? winnerSeats[0].id : null,
       isSplit: names.length > 1,
     };
     setHands(prev => [finalHand, ...prev]);
@@ -1782,17 +1953,21 @@ export default function App() {
     const { winnerName, winnerNames, isSplit, winnerCards, winnerSeatId, autoWin, ...base } = last;
 
     // 마지막 액션 스트리트 찾기
+    const SL = streetsOf(base);
     let lastActed = 0;
-    for (let i = 0; i < STREETS.length; i++) {
-      if (base.streets[STREETS[i]].length > 0) lastActed = i;
+    for (let i = 0; i < SL.length; i++) {
+      if ((base.streets[SL[i]] || []).length > 0) lastActed = i;
     }
-    // 그 스트리트 + 이후 비움
-    const newStreets = { ...base.streets };
-    for (let i = lastActed; i < STREETS.length; i++) newStreets[STREETS[i]] = [];
+    // 그 스트리트 + 이후 비움. 누락 키는 빈 배열로 정규화(구버전 핸드 호환).
+    const newStreets = {};
+    SL.forEach((k, i) => { newStreets[k] = (i >= lastActed) ? [] : (base.streets?.[k] || []); });
+    // 보드도 lastActed 스트리트까지만 유지
+    const keepBoard = lastActed === 0 ? 0 : (BOARD_COUNT_BY_STREET[SL[lastActed]] || 0);
+    const newBoard = (base.board || [null, null, null, null, null]).map((c, i) => (i < keepBoard ? c : null));
 
     if (base.buttonSeatId != null) setButtonSeatId(base.buttonSeatId);
     setHands(prev => prev.slice(1));
-    setCurrentHand({ ...base, streets: newStreets });
+    setCurrentHand({ ...base, streets: newStreets, board: newBoard });
     setCurrentStreet(lastActed);
     setShowWinnerPicker(false);
     setSelectedWinners([]);
@@ -1805,14 +1980,20 @@ export default function App() {
   const goToStreet = (targetIdx, fromPicker = false) => {
     if (!currentHand) return;
     if (!fromPicker && targetIdx >= currentStreet) return; // 진행 중 탭: 현재/미래 차단
-    if (targetIdx < 0 || targetIdx >= STREETS.length) return;
+    const SL = streetsOf(currentHand);
+    if (targetIdx < 0 || targetIdx >= SL.length) return;
     setCurrentHand(prev => {
       if (!prev) return prev;
       const newStreets = { ...prev.streets };
-      for (let i = targetIdx; i < STREETS.length; i++) {
-        newStreets[STREETS[i]] = [];
+      const newRoundHole = { ...(prev.roundHole || {}) };
+      for (let i = targetIdx; i < SL.length; i++) {
+        newStreets[SL[i]] = [];
+        delete newRoundHole[SL[i]];  // 되돌린 드로우 스냅샷 제거
       }
-      return { ...prev, streets: newStreets };
+      // 보드도 되돌린 스트리트까지만 유지 (이후 깐 카드 제거 → stale 방지)
+      const keepBoard = targetIdx === 0 ? 0 : (BOARD_COUNT_BY_STREET[SL[targetIdx]] || 0);
+      const newBoard = (prev.board || [null, null, null, null, null]).map((c, i) => (i < keepBoard ? c : null));
+      return { ...prev, streets: newStreets, board: newBoard, roundHole: newRoundHole };
     });
     setCurrentStreet(targetIdx);
     setShowWinnerPicker(false);
@@ -1840,7 +2021,10 @@ export default function App() {
     setEditOut(false);
   };
 
-  const currentStreetName = STREETS[currentStreet];
+  const streetList = streetsOf(currentHand);
+  // currentStreet가 범위를 벗어나면 마지막 스트리트로 클램프(스트리트 키 누락 크래시 방지)
+  const safeStreetIdx = Math.min(Math.max(currentStreet, 0), Math.max(0, streetList.length - 1));
+  const currentStreetName = streetList[safeStreetIdx];
   const isHandActive = !!currentHand;
   const nextToActId = isHandActive ? (getNextToAct()?.id ?? null) : null;
 
@@ -1891,20 +2075,21 @@ export default function App() {
 
       {/* ══════════════════ TABLE VIEW ══════════════════ */}
       {activeView === "table" && (
-        <div style={{ padding: "14px 16px" }}>
+        <div style={{ padding: "6px 16px 8px" }}>
 
           {/* 게임(홀카드 장수) 선택 — 핸드 진행 중엔 잠금 */}
           <div style={{
             display: "flex", alignItems: "center", gap: 6,
-            marginBottom: 12, flexWrap: "wrap",
+            marginBottom: 8, flexWrap: "wrap",
           }}>
             <span style={{ color: "#7e8ca0", fontSize: 9, letterSpacing: 2, marginRight: 2 }}>GAME</span>
-            {CARD_COUNT_OPTIONS.map(opt => {
-              const isSel = holeCardCount === opt.count;
+            {GAME_ORDER.map(id => {
+              const g = GAME_TYPES[id];
+              const isSel = gameType === id;
               return (
                 <button
-                  key={opt.count}
-                  onClick={() => changeCardCount(opt.count)}
+                  key={id}
+                  onClick={() => changeGameType(id)}
                   disabled={cardCountLocked}
                   title={cardCountLocked ? "핸드 진행 중엔 변경 불가" : ""}
                   style={{
@@ -1918,21 +2103,14 @@ export default function App() {
                     fontFamily: MONO,
                     opacity: cardCountLocked && !isSel ? 0.5 : 1,
                   }}
-                >{opt.label}<span style={{ fontSize: 9, opacity: .6, marginLeft: 4 }}>{opt.count}</span></button>
+                >{g.label}<span style={{ fontSize: 9, opacity: .6, marginLeft: 4 }}>{g.cards}</span></button>
               );
             })}
-            {/* 비표준 장수(예: 7 스터드)를 쓰던 데이터면 라벨 보강 */}
-            {!CARD_COUNT_OPTIONS.some(o => o.count === holeCardCount) && (
-              <span style={{
-                padding: "5px 10px", background: "#10b981", borderRadius: 5,
-                color: "#000", fontSize: 11, fontWeight: 700,
-                fontFamily: MONO,
-              }}>{holeCardCount}장</span>
-            )}
           </div>
 
+
           {/* 자리 교체 (스왑) 토글 — 핸드 진행 중엔 비활성 */}
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
             <button
               onClick={() => {
                 if (isHandActive) return;
@@ -1958,10 +2136,10 @@ export default function App() {
             )}
           </div>
 
-          {/* 원형 테이블 */}
-          <div style={{ position: "relative", width: "100%", paddingBottom: "80%", marginBottom: 14 }}>
+          {/* 원형 테이블 (가로 100% 유지, 높이만 축소) */}
+          <div style={{ position: "relative", width: "100%", paddingBottom: "58%", marginBottom: 6 }}>
             <div style={{ position: "absolute", inset: 0 }}>
-              <svg viewBox="0 0 100 80" style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}>
+              <svg viewBox="0 0 100 80" preserveAspectRatio="none" style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}>
                 <defs>
                   <radialGradient id="felt" cx="50%" cy="55%">
                     <stop offset="0%" stopColor="#063324" />
@@ -1972,9 +2150,9 @@ export default function App() {
                     <stop offset="100%" stopColor="#0a0602" />
                   </radialGradient>
                 </defs>
-                <ellipse cx="50" cy="50" rx="46" ry="36" fill="url(#rim)" />
-                <ellipse cx="50" cy="50" rx="43" ry="33" fill="url(#felt)" stroke="#0d4a31" strokeWidth=".6" />
-                <ellipse cx="50" cy="50" rx="39" ry="29.5" fill="none" stroke="#0a3d28" strokeWidth=".3" strokeDasharray=".8 1.2" />
+                <ellipse cx="50" cy="40" rx="46" ry="36" fill="url(#rim)" />
+                <ellipse cx="50" cy="40" rx="43" ry="33" fill="url(#felt)" stroke="#0d4a31" strokeWidth=".6" />
+                <ellipse cx="50" cy="40" rx="39" ry="29.5" fill="none" stroke="#0a3d28" strokeWidth=".3" strokeDasharray=".8 1.2" />
               </svg>
 
               {/* 중앙 */}
@@ -1990,7 +2168,7 @@ export default function App() {
                       {currentStreetName}
                     </div>
                     <div style={{ display: "flex", gap: 3, justifyContent: "center", marginTop: 4 }}>
-                      {STREETS.map((_, i) => (
+                      {streetList.map((_, i) => (
                         <div key={i} style={{
                           width: 7, height: 7, borderRadius: "50%",
                           background: i < currentStreet ? "#10b981"
@@ -2020,8 +2198,8 @@ export default function App() {
                 let isAllIn = false;
                 if (currentHand) {
                   for (let k = 0; k <= currentStreet; k++) {
-                    const street = STREETS[k];
-                    currentHand.streets[street].forEach(a => {
+                    const street = streetList[k];
+                    (currentHand.streets[street] || []).forEach(a => {
                       if (a.seatId === seat.id) {
                         if (a.action === "fold") isFolded = true;
                         if (a.action === "allin") isAllIn = true;
@@ -2071,7 +2249,7 @@ export default function App() {
                       }}
                     >
                       <span style={{ fontSize: 8, color: isNextToAct ? "#22d3ee" : seat.out ? "#f87171" : seat.active ? "#10b981" : "#536583", letterSpacing: .5 }}>
-                        {seat.out ? "OUT" : (seat.name && seat.position) ? posLabel(seat.position) : (i + 1)}
+                        {seat.out ? `OUT ${Math.max(0, OUT_VACATE_AFTER - (seat.outCount || 0))}` : (seat.name && seat.position) ? posLabel(seat.position) : (i + 1)}
                       </span>
                       <span style={{ fontSize: seat.name ? 9 : 14, fontWeight: seat.name ? 700 : 400 }}>
                         {seat.name ? seat.name.slice(0, 5) : "+"}
@@ -2280,12 +2458,25 @@ export default function App() {
                           fontSize: 10, color: "#10b981", padding: "1px 6px", borderRadius: 4,
                         }}>{posLabel(seat.position)}</span>
                         <span style={{ fontSize: 14, fontWeight: 700 }}>{seat.name}</span>
-                        {cardsToText(currentHand.holeCards[seat.id]) && (
-                          <span style={{
-                            color: "#fbbf24", fontSize: 13, fontWeight: 900,
-                            fontFamily: MONO,
-                          }}>{cardsToText(currentHand.holeCards[seat.id])}</span>
-                        )}
+                        {(() => {
+                          const lastIdx = streetList.length - 1;
+                          const finalText = cardsToText(handAtStreet(currentHand, seat.id, lastIdx));
+                          return (
+                            <span
+                              role="button"
+                              onClick={(ev) => { ev.stopPropagation(); setCardPickerFor({ showdown: { seatId: seat.id } }); }}
+                              title="쇼다운 핸드 입력/수정"
+                              style={{
+                                color: finalText ? "#fbbf24" : "#38bdf8",
+                                fontSize: finalText ? 13 : 9, fontWeight: finalText ? 900 : 700,
+                                fontFamily: MONO,
+                                border: finalText ? "none" : "1px dashed #38bdf8",
+                                borderRadius: 4, padding: finalText ? 0 : "1px 5px",
+                                cursor: "pointer",
+                              }}
+                            >{finalText || "+핸드"}</span>
+                          );
+                        })()}
                       </div>
                       <span style={{ color: isSel ? "#10b981" : "#374151", fontSize: 16 }}>🏆</span>
                     </button>
@@ -2321,8 +2512,8 @@ export default function App() {
                 // 실제 액션이 입력된 마지막 스트리트로 되돌리기.
                 // (자동 점프로 currentStreet가 RIVER여도, 턴에서 올인 끝났으면 턴으로)
                 let lastActed = -1;
-                for (let i = 0; i < STREETS.length; i++) {
-                  if (currentHand.streets[STREETS[i]].length > 0) lastActed = i;
+                for (let i = 0; i < streetList.length; i++) {
+                  if ((currentHand.streets[streetList[i]] || []).length > 0) lastActed = i;
                 }
                 if (lastActed < 0) return null;
                 return (
@@ -2332,7 +2523,7 @@ export default function App() {
                     borderRadius: 8, color: "#10b981",
                     fontSize: 11, fontWeight: 700, cursor: "pointer",
                     fontFamily: MONO,
-                  }}>↶ {STREET_SHORT[STREETS[lastActed]]} 로 되돌리기</button>
+                  }}>↶ {STREET_SHORT[streetList[lastActed]]} 로 되돌리기</button>
                 );
               })()}
             </div>
@@ -2346,7 +2537,7 @@ export default function App() {
             }}>
               {/* 스트리트 탭 */}
               <div style={{ display: "flex", gap: 5, marginBottom: 12, alignItems: "center" }}>
-                {STREETS.map((s, i) => {
+                {streetList.map((s, i) => {
                   const isPast = i < currentStreet;
                   return (
                     <button key={s}
@@ -2371,13 +2562,19 @@ export default function App() {
                   );
                 })}
                 <div style={{ flex: 1 }} />
-                <button onClick={undoLastAction} disabled={currentHand.streets[currentStreetName].length === 0} style={{
+                {(() => {
+                  const betEmpty = (currentHand.streets[currentStreetName] || []).length === 0;
+                  const canUndo = !betEmpty;
+                  return (
+                <button onClick={undoLastAction} disabled={!canUndo} style={{
                   padding: "4px 10px",
                   background: "transparent", border: "1px solid #1a2d45",
                   borderRadius: 6, color: "#7e8ca0",
                   fontSize: 10, cursor: "pointer",
-                  opacity: currentHand.streets[currentStreetName].length === 0 ? .3 : 1,
+                  opacity: canUndo ? 1 : .3,
                 }}>↶</button>
+                  );
+                })()}
                 <button onClick={discardHand} style={{
                   padding: "4px 10px",
                   background: "transparent", border: "1px solid #2d1a1a",
@@ -2386,7 +2583,33 @@ export default function App() {
                 }}>✕</button>
               </div>
 
-              {/* 현재 액션할 사람 (단일 카드) */}
+              {/* 보드 카드 (포스트플랍, 홀덤/오마하만): 칸 탭 → 해당 스트리트 카드 입력 */}
+              {currentStreet >= 1 && !GAME_TYPES[currentHand.gameType]?.draw && BOARD_COUNT_BY_STREET[currentStreetName] && (
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12 }}>
+                  <span style={{ color: "#7e8ca0", fontSize: 9, letterSpacing: 1, marginRight: 2 }}>BOARD</span>
+                  {Array.from({ length: BOARD_COUNT_BY_STREET[currentStreetName] }).map((_, idx) => {
+                    const card = currentHand.board?.[idx];
+                    const label = card ? cardLabel(card) : "";
+                    const filled = !!label;
+                    const col = card && SUIT_COLOR[card[1]] ? SUIT_COLOR[card[1]] : null;
+                    return (
+                      <button key={idx}
+                        onClick={() => setCardPickerFor({ board: currentStreetName })}
+                        title={`${STREET_SHORT[currentStreetName]} 보드 편집 (${BOARD_COUNT_BY_STREET[currentStreetName]}장)`}
+                        style={{
+                          width: 30, height: 40, borderRadius: 5,
+                          background: filled ? "#fafafa" : "#070f1c",
+                          border: `1px solid ${filled ? "#2a4a6e" : "#162a40"}`,
+                          color: filled ? (col || "#0f172a") : "#2a4055",
+                          fontSize: filled ? 15 : 12, fontWeight: 800,
+                          cursor: "pointer", fontFamily: MONO,
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          padding: 0,
+                        }}>{label || "+"}</button>
+                    );
+                  })}
+                </div>
+              )}
               {(() => {
                 const nextPlayer = getNextToAct();
 
@@ -2405,7 +2628,8 @@ export default function App() {
                 }
 
                 const handCardCount = currentHand.cardCount || holeCardCount;
-                const rawHole = currentHand.holeCards[nextPlayer.id];
+                // 드로우 게임: 그 시점 스냅샷(드로우 후 핸드). 비드로우/딜은 holeCards.
+                const rawHole = handAtStreet(currentHand, nextPlayer.id, currentStreet);
                 const holeCards = rawHole || Array(handCardCount).fill(null);
                 // A규칙: 카드 모달에서 확정(entry 생성)되면 ?라도 액션 허용
                 const hasCardsForNext = !!rawHole && rawHole.length > 0;
@@ -2459,10 +2683,13 @@ export default function App() {
                       {currentStreet === 0 && (
                         <button
                           onClick={() => setCardPickerFor({ seatId: nextPlayer.id })}
+                          title="딜 카드 입력/수정"
                           style={{
-                            display: "flex", gap: 3, flexWrap: "wrap", justifyContent: "flex-end",
-                            background: "transparent", border: "none", padding: 0,
-                            cursor: "pointer", marginLeft: "auto", maxWidth: "60%",
+                            display: "flex", gap: 3, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end",
+                            background: "#06243a", border: "1.5px solid #38bdf8",
+                            borderRadius: 8, padding: "4px 8px",
+                            cursor: "pointer", marginLeft: "auto", maxWidth: "62%",
+                            boxShadow: "0 0 10px rgba(56,189,248,.35)",
                           }}
                         >
                           {holeCards.map((c, slot) => {
@@ -2482,6 +2709,7 @@ export default function App() {
                               </div>
                             );
                           })}
+                          <span style={{ fontSize: 12, color: "#38bdf8", marginLeft: 2 }}>✎</span>
                         </button>
                       )}
                       {currentStreet === 0 && !hasCardsForNext && (
@@ -2495,12 +2723,28 @@ export default function App() {
                           textAlign: "center", marginTop: 6,
                         }}>← 카드 선택 후 액션 (폴드는 가능)</span>
                       )}
-                      {currentStreet > 0 && cardsToText(holeCards) && (
-                        <span style={{
-                          marginLeft: "auto",
-                          color: "#fbbf24", fontSize: 16, fontWeight: 900,
-                          fontFamily: MONO,
-                        }}>{cardsToText(holeCards)}</span>
+                      {currentStreet > 0 && (
+                        <button
+                          onClick={() => setCardPickerFor({ edit: { seatId: nextPlayer.id, streetIdx: currentStreet } })}
+                          title="이 라운드 핸드 입력/수정"
+                          style={{
+                            marginLeft: "auto",
+                            display: "inline-flex", alignItems: "center", gap: 6,
+                            background: "#06243a", border: "1.5px solid #38bdf8",
+                            borderRadius: 8, padding: "4px 10px",
+                            cursor: "pointer", fontFamily: MONO,
+                            boxShadow: "0 0 10px rgba(56,189,248,.35)",
+                          }}
+                        >
+                          {cardsToText(holeCards) ? (
+                            <span style={{ color: "#fbbf24", fontSize: 16, fontWeight: 900 }}>
+                              {cardsToText(holeCards)}
+                            </span>
+                          ) : (
+                            <span style={{ color: "#7dd3fc", fontSize: 11, fontWeight: 700, animation: "cardPulse 1.2s infinite" }}>핸드 입력</span>
+                          )}
+                          <span style={{ fontSize: 12, color: "#38bdf8" }}>✎</span>
+                        </button>
                       )}
                     </div>
 
@@ -2619,7 +2863,8 @@ export default function App() {
 
               {/* 누적 액션 로그 (Pre부터 현재까지 전체) */}
               {(() => {
-                const hasAny = STREETS.some(s => (currentHand.streets[s] || []).length > 0);
+                const hasAny = streetList.some(s =>
+                  (currentHand.streets[s] || []).length > 0);
                 if (!hasAny) return null;
                 // 같은 카드 2명+ 이면 이름 표시 (로그와 동일 규칙)
                 const dupCardSeats = computeDupCardSeats(currentHand);
@@ -2629,8 +2874,8 @@ export default function App() {
                     background: "#020a14", border: "1px solid #0f1f35",
                     borderRadius: 8,
                   }}>
-                    {STREETS.map((s, idx) => (
-                      <StreetActionsInline key={s} hand={currentHand} streetIdx={idx} dupCardSeats={dupCardSeats} />
+                    {streetList.map((s, idx) => (
+                      <StreetLine key={s} hand={currentHand} streetIdx={idx} dupCardSeats={dupCardSeats} size="sm" />
                     ))}
                   </div>
                 );
@@ -2648,20 +2893,37 @@ export default function App() {
                   ALIVE
                 </span>
                 {getActionablePlayers().map(p => {
-                  const hc = currentHand.holeCards[p.id];
-                  return (
-                    <span key={p.id} style={{
-                      display: "inline-flex", alignItems: "center", gap: 4,
-                      fontSize: 11,
-                    }}>
+                  const hc = handAtStreet(currentHand, p.id, currentStreet);
+                  const hcText = cardsToText(hc);
+                  // 언제든(액션 후/드로우 후 포함) 핸드 칩 탭 → 그 시점 핸드 수정.
+                  // street0=딜(holeCards), 드로우=해당 라운드 스냅샷에 기록.
+                  const inner = (
+                    <>
                       <span style={{ color: "#10b981", fontSize: 9 }}>{posLabel(p.position)}</span>
                       <span style={{ color: "#94a3b8", fontWeight: 700 }}>{p.name}</span>
-                      {cardsToText(hc) && (
+                      {hcText ? (
                         <span style={{ color: "#fbbf24", fontFamily: MONO, fontWeight: 900 }}>
-                          {cardsToText(hc)}
+                          {hcText}
                         </span>
+                      ) : (
+                        <span style={{
+                          color: "#fbbf24", fontSize: 9, fontWeight: 700,
+                          border: "1px dashed #fbbf24", borderRadius: 4, padding: "0 4px",
+                        }}>+카드</span>
                       )}
-                    </span>
+                    </>
+                  );
+                  return (
+                    <button key={p.id}
+                      onClick={() => setCardPickerFor({ edit: { seatId: p.id, streetIdx: currentStreet } })}
+                      title={currentStreet === 0 ? "딜 카드 입력/수정" : "이 라운드 핸드 입력/수정"}
+                      style={{
+                        display: "inline-flex", alignItems: "center", gap: 4,
+                        fontSize: 11, background: "#0a1c2c", border: "1px solid #1e3a52",
+                        padding: "3px 6px", borderRadius: 6, cursor: "pointer",
+                        fontFamily: "inherit",
+                      }}
+                    >{inner}<span style={{ fontSize: 9, color: "#38bdf8" }}>✎</span></button>
                   );
                 })}
               </div>
@@ -2670,7 +2932,8 @@ export default function App() {
               {(() => {
                 const actionableCount = getActionablePlayers().length;
                 const goToShowdown = actionableCount <= 1;
-                const isGold = currentStreet === 3 || goToShowdown;
+                const lastIdx = streetList.length - 1;
+                const isGold = currentStreet === lastIdx || goToShowdown;
                 return (
                   <button
                     onClick={nextStreet}
@@ -2694,8 +2957,8 @@ export default function App() {
                   >
                     {goToShowdown
                       ? "🏆 SHOWDOWN → WINNER 선택"
-                      : currentStreet < 3
-                        ? `→ ${STREET_SHORT[STREETS[currentStreet + 1]]} 로 이동`
+                      : currentStreet < lastIdx
+                        ? `→ ${STREET_SHORT[streetList[currentStreet + 1]]} 로 이동`
                         : "🏆 WINNER 선택"}
                   </button>
                 );
@@ -2837,8 +3100,20 @@ export default function App() {
         open={!!cardPickerFor}
         onClose={closeCardPicker}
         onSelectBoth={handleCardPick}
-        initialCards={currentHand?.holeCards[cardPickerFor?.seatId] || [null, null]}
-        cardCount={currentHand?.cardCount || holeCardCount}
+        initialCards={
+          cardPickerFor?.board
+            ? (currentHand?.board || []).slice(0, BOARD_COUNT_BY_STREET[cardPickerFor.board])
+            : cardPickerFor?.showdown
+              ? (handAtStreet(currentHand, cardPickerFor.showdown.seatId, streetsOf(currentHand).length - 1) || [])
+              : cardPickerFor?.edit
+                ? (handAtStreet(currentHand, cardPickerFor.edit.seatId, cardPickerFor.edit.streetIdx) || [])
+                : (currentHand?.holeCards[cardPickerFor?.seatId] || [null, null])
+        }
+        cardCount={
+          cardPickerFor?.board
+            ? BOARD_COUNT_BY_STREET[cardPickerFor.board]
+            : (currentHand?.cardCount || holeCardCount)
+        }
       />
 
       {/* 핸드 종료 리캡 모달 */}
