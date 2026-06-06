@@ -288,11 +288,11 @@ function handToText(hand) {
         // 드로우 첫 액션: 이름 + 교환수(PAT/ND) + 핸드
         const di = drawInfoText(hand, e.seatId, sIdx);
         prefix = `${e.playerName} ${di}${handText ? " " + handText : ""} `;
-      } else if (isPreflop || isDrawStreet) {
-        // 드로우/프리 후속 액션: 이름만
+      } else if (isDrawStreet) {
+        // 드로우 후속 액션: 이름만
         prefix = `${e.playerName} `;
       } else if (handText) {
-        // 비드로우 포스트플랍: 같은 카드 2명+면 이름 병기
+        // 프리플랍 후속 + 비드로우 포스트플랍: 카드 우선 (같은 카드 2명+면 이름 병기)
         prefix = dupCardSeats.has(e.seatId) ? `${e.playerName} ${handText} ` : `${handText} `;
       } else {
         prefix = `${e.playerName} `;
@@ -598,6 +598,167 @@ function drawInfoText(hand, seatId, streetIdx) {
   return n === 0 ? "PAT" : `D${n}`;
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// 홀덤 핸드 평가 (승률 계산용 순수 로직)
+// 카드 문자열 "Kh" → {r:13, s:1}. 문양 미정('x')·'?'·null 은 파싱 불가(null).
+// ══════════════════════════════════════════════════════════════════════════════
+const SUIT_IDX = { s: 0, h: 1, d: 2, c: 3 };
+function cardIsSuited(c) { return !!c && c.length === 2 && SUIT_IDX[c[1]] !== undefined && !!RANK_VALUE[c[0]]; }
+function parseCard(c) {
+  if (!cardIsSuited(c)) return null;
+  return { r: RANK_VALUE[c[0]], s: SUIT_IDX[c[1]] };
+}
+
+// 5장 점수: 높을수록 강함. 정렬/객체 없이 재사용 버퍼로 계산(승률 루프 핫패스).
+const _rc = new Int32Array(15);
+const _tb = new Int32Array(5);
+const _h5 = new Array(5);
+function score5(cs) {
+  for (let r = 2; r <= 14; r++) _rc[r] = 0;
+  const s0 = cs[0].s; let flush = true;
+  for (let i = 0; i < 5; i++) { _rc[cs[i].r]++; if (cs[i].s !== s0) flush = false; }
+
+  let straightHigh = 0;
+  for (let hi = 14; hi >= 6; hi--) {
+    if (_rc[hi] && _rc[hi - 1] && _rc[hi - 2] && _rc[hi - 3] && _rc[hi - 4]) { straightHigh = hi; break; }
+  }
+  if (!straightHigh && _rc[14] && _rc[5] && _rc[4] && _rc[3] && _rc[2]) straightHigh = 5; // 휠
+
+  let c4 = 0, c3 = 0, c2 = 0;
+  for (let r = 2; r <= 14; r++) { const c = _rc[r]; if (c === 4) c4++; else if (c === 3) c3++; else if (c === 2) c2++; }
+
+  let cat;
+  if (flush && straightHigh) cat = 8;
+  else if (c4) cat = 7;
+  else if (c3 && c2) cat = 6;
+  else if (flush) cat = 5;
+  else if (straightHigh) cat = 4;
+  else if (c3) cat = 3;
+  else if (c2 >= 2) cat = 2;
+  else if (c2 === 1) cat = 1;
+  else cat = 0;
+
+  let n = 0;
+  if (cat === 8 || cat === 4) { _tb[0] = straightHigh; n = 1; }
+  else { for (let c = 4; c >= 1; c--) for (let r = 14; r >= 2; r--) if (_rc[r] === c) _tb[n++] = r; }
+
+  let score = cat;
+  for (let i = 0; i < 5; i++) score = score * 15 + (i < n ? _tb[i] : 0);
+  return score;
+}
+
+// 5~7장 중 best 5장 점수 (모든 C(n,5) 조합). 5장 버퍼 재사용.
+function scoreBest(cs) {
+  const n = cs.length;
+  if (n < 5) return 0;
+  if (n === 5) return score5(cs);
+  let best = 0;
+  for (let a = 0; a < n - 4; a++)
+    for (let b = a + 1; b < n - 3; b++)
+      for (let c = b + 1; c < n - 2; c++)
+        for (let d = c + 1; d < n - 1; d++)
+          for (let e = d + 1; e < n; e++) {
+            _h5[0] = cs[a]; _h5[1] = cs[b]; _h5[2] = cs[c]; _h5[3] = cs[d]; _h5[4] = cs[e];
+            const s = score5(_h5);
+            if (s > best) best = s;
+          }
+  return best;
+}
+
+function cardKey(rs) { return rs.r * 4 + rs.s; }
+function buildDeck(usedSet) {
+  const deck = [];
+  for (let r = 2; r <= 14; r++) for (let s = 0; s < 4; s++) {
+    const k = r * 4 + s;
+    if (!usedSet.has(k)) deck.push({ r, s });
+  }
+  return deck;
+}
+
+// 홀덤 승률(equity) 계산. 모든 스트리트 자동 분기(완전열거/몬테카를로).
+// hands: [{seatId, cards:[c1,c2]}] (살아있는 플레이어, 문양까지 확정), board: [c..] (0~5, 일부 미입력 가능)
+// 반환: { ok, reason?, players:[{seatId, win, tie, equity}], iterations, exact }
+function computeEquity(hands, board, opts = {}) {
+  const used = new Set();
+  const parsed = [];
+  for (const h of (hands || [])) {
+    const pc = (h.cards || []).filter(cardIsSuited).map(parseCard);
+    if (pc.length !== 2) return { ok: false, reason: "hole" };
+    for (const c of pc) { const k = cardKey(c); if (used.has(k)) return { ok: false, reason: "dup" }; used.add(k); }
+    parsed.push({ seatId: h.seatId, cards: pc });
+  }
+  if (parsed.length < 2) return { ok: false, reason: "players" };
+  const boardKnown = (board || []).filter(cardIsSuited).map(parseCard);
+  for (const c of boardKnown) { const k = cardKey(c); if (used.has(k)) return { ok: false, reason: "dup" }; used.add(k); }
+  if (boardKnown.length > 5) return { ok: false, reason: "board" };
+
+  const need = 5 - boardKnown.length;
+  const deck = buildDeck(used);
+  const wins = new Array(parsed.length).fill(0);     // 단독 승 횟수
+  const tieHits = new Array(parsed.length).fill(0);  // 스플릿에 낀 횟수(빈도)
+  const tieShare = new Array(parsed.length).fill(0); // 스플릿 지분 합(1/n)
+  let iterations = 0;
+
+  const np = parsed.length;
+  const _isBest = new Int8Array(np);
+  const buf7 = new Array(7); // 재사용 버퍼 (홀2 + 보드)
+  const settle = (full) => {
+    let best = -1, bestN = 0, bestFirst = -1;
+    const flen = full.length;
+    buf7.length = 2 + flen;
+    for (let i = 0; i < np; i++) {
+      const hc = parsed[i].cards;
+      buf7[0] = hc[0]; buf7[1] = hc[1];
+      for (let j = 0; j < flen; j++) buf7[2 + j] = full[j];
+      const s = scoreBest(buf7);
+      if (s > best) { best = s; bestN = 1; bestFirst = i; }
+      else if (s === best) bestN++;
+      _isBest[i] = 0; _score[i] = s;
+    }
+    if (bestN === 1) wins[bestFirst]++;
+    else { const sh = 1 / bestN; for (let i = 0; i < np; i++) if (_score[i] === best) { tieHits[i]++; tieShare[i] += sh; } }
+    iterations++;
+  };
+  const _score = new Float64Array(np);
+
+  const comb = (n, k) => { let r = 1; for (let i = 0; i < k; i++) r = r * (n - i) / (i + 1); return Math.round(r); };
+  const total = need === 0 ? 1 : comb(deck.length, need);
+  const exact = total <= (opts.exactMax || 200000);
+
+  if (need === 0) {
+    settle(boardKnown);
+  } else if (exact) {
+    const full = boardKnown.slice(); const base = boardKnown.length; const pickIdx = [];
+    const rec = (start, depth) => {
+      if (depth === need) { for (let i = 0; i < need; i++) full[base + i] = deck[pickIdx[i]]; settle(full); return; }
+      for (let i = start; i <= deck.length - (need - depth); i++) { pickIdx.push(i); rec(i + 1, depth + 1); pickIdx.pop(); }
+    };
+    rec(0, 0);
+  } else {
+    const N = opts.samples || 50000;
+    const dl = deck.length;
+    const full = boardKnown.slice(); const base = boardKnown.length;
+    for (let t = 0; t < N; t++) {
+      for (let k = 0; k < need; k++) { // 러닝 부분 셔플 → Set 없이 중복없는 샘플
+        const j = k + ((Math.random() * (dl - k)) | 0);
+        const tmp = deck[k]; deck[k] = deck[j]; deck[j] = tmp;
+        full[base + k] = deck[k];
+      }
+      settle(full);
+    }
+  }
+
+  return {
+    ok: true, iterations, exact,
+    players: parsed.map((h, i) => ({
+      seatId: h.seatId,
+      win: wins[i] / iterations,                          // 단독 승 빈도
+      tie: tieHits[i] / iterations,                       // 스플릿 빈도
+      equity: (wins[i] + tieShare[i]) / iterations,       // 지분(1/n 반영)
+    })),
+  };
+}
+
 // 두 자리의 내용(name/active/out)만 교체. id/position은 의자에 남음(포지션은 자리 기준 자동계산).
 function swapSeatContents(seats, idA, idB) {
   const a = seats.find(x => x.id === idA);
@@ -690,7 +851,7 @@ function ActionEntry({ hand, entries, i, isPreflop, isFirstForPlayer, dupCardSea
         {drawInfoText(hand, e.seatId, streetIdx)}
       </span>{" "}{cardsEl}{cardsText && " "}
     </>);
-  } else if (isPreflop || isDrawStreet) {
+  } else if (isDrawStreet) {
     lead = <>{nameEl(true)}{" "}</>;
   } else if (cardsText) {
     lead = (<>{showName && <>{nameEl(true)}{" "}</>}{cardsEl}{" "}</>);
@@ -1422,6 +1583,9 @@ export default function App() {
   const [showWinnerPicker, setShowWinnerPicker] = useState(false);
   const [selectedWinners, setSelectedWinners] = useState([]); // 다중 위너 선택용 seatId 배열
   const [cardPickerFor, setCardPickerFor] = useState(null); // { seatId } | { board } | { showdown } | { edit }
+  const [equityResult, setEquityResult] = useState(null); // { players,exact,iterations,street } | { error,street }
+  const [equityStreet, setEquityStreet] = useState(null);  // 계산 대상 스트리트 키
+  const [equityBusy, setEquityBusy] = useState(false);
   const [recapHand, setRecapHand] = useState(null); // 방금 끝난 핸드를 모달로 보여줌
   const [gameType, setGameType] = useState(() => {
     const g = loadFromStorage("pt_gametype", null);
@@ -1704,6 +1868,7 @@ export default function App() {
   const closeCardPicker = useCallback(() => setCardPickerFor(null), []);
   const handleCardPick = useCallback((cards) => {
     if (!cardPickerFor) return;
+    setEquityResult(null); // 카드 바뀌면 이전 승률 무효
     if (cardPickerFor.board) {
       const street = cardPickerFor.board;
       const count = BOARD_COUNT_BY_STREET[street]; // 누적: 플랍3·턴4·리버5
@@ -1771,6 +1936,49 @@ export default function App() {
     }
     return currentHand.seats.filter(s => !foldedIds.has(s.id));
   };
+
+  // ── 승률(equity) 계산: 홀덤만. 살아있는 플레이어(문양 확정 홀2장) + 입력된 보드. ──
+  const equityEligible = () => {
+    if (!currentHand || GAME_TYPES[currentHand.gameType]?.cards !== 2) return [];
+    return getAlivePlayers(currentStreet)
+      .map(s => ({ seatId: s.id, name: s.name, position: s.position, cards: (currentHand.holeCards[s.id] || []).filter(cardIsSuited) }))
+      .filter(h => h.cards.length === 2);
+  };
+  const runEquityFor = (streetName) => {
+    setEquityStreet(streetName);
+    const hands = equityEligible();
+    if (hands.length < 2) { setEquityResult({ error: "문양까지 입력된 핸드가 2명 이상 필요합니다", street: streetName }); return; }
+    // 선택 스트리트 보드가 문양까지 다 입력돼야 그 시점 승률 계산
+    const needBoard = BOARD_COUNT_BY_STREET[streetName] || 0; // 프리플랍 0
+    const board = currentHand.board || [];
+    const suitedBoard = board.slice(0, needBoard).filter(cardIsSuited);
+    if (needBoard > 0 && suitedBoard.length < needBoard) {
+      setEquityResult({ error: `${STREET_SHORT[streetName]} 보드를 문양까지 입력하세요 (현재 ${suitedBoard.length}/${needBoard}장)`, street: streetName });
+      return;
+    }
+    setEquityBusy(true);
+    setEquityResult(null);
+    setTimeout(() => { // 스피너 먼저 그린 뒤 동기 계산
+      const r = computeEquity(hands, suitedBoard, { samples: 50000 });
+      if (!r.ok) {
+        setEquityResult({ error: r.reason === "dup" ? "중복된 카드가 있습니다" : "계산할 수 없습니다", street: streetName });
+      } else {
+        const metaById = {}; hands.forEach(h => { metaById[h.seatId] = h; });
+        setEquityResult({
+          players: r.players.map(p => ({
+            ...p,
+            name: metaById[p.seatId]?.name || "",
+            position: metaById[p.seatId]?.position || "",
+            cards: metaById[p.seatId]?.cards || [],
+          })).sort((a, b) => b.equity - a.equity),
+          exact: r.exact, iterations: r.iterations, street: streetName,
+        });
+      }
+      setEquityBusy(false);
+    }, 30);
+  };
+  // 스트리트/핸드 바뀌면 이전 결과 무효화
+  useEffect(() => { setEquityResult(null); setEquityBusy(false); setEquityStreet(null); }, [currentStreet, currentHand?.number]);
 
   // 현재 스트리트에서 액션 가능한 플레이어
   // PREFLOP: 모든 활성 시트
@@ -1867,9 +2075,11 @@ export default function App() {
         return;
       }
 
-      // 위너 선택 화면: 숫자로 토글, Enter로 확정
+      // 위너 선택 화면: 숫자로 토글, Enter로 확정, Esc로 취소
       if (showWinnerPicker && currentHand) {
-        const alive = getAlivePlayers(3);
+        const lastIdx = streetsOf(currentHand).length - 1;
+        const alive = getAlivePlayers(lastIdx);
+        if (key === "escape") { setShowWinnerPicker(false); setSelectedWinners([]); return; }
         if (key === "enter") {
           const winnerSeats = alive.filter(s => selectedWinners.includes(s.id));
           if (winnerSeats.length > 0) {
@@ -2303,7 +2513,11 @@ export default function App() {
               <input
                 value={editName}
                 onChange={e => setEditName(e.target.value)}
-                placeholder="이름 직접 입력..."
+                onKeyDown={e => {
+                  if (e.key === "Enter") { e.preventDefault(); saveSeatName(); }
+                  else if (e.key === "Escape") { e.preventDefault(); setEditingSeat(null); }
+                }}
+                placeholder="이름 직접 입력... (Enter 확인)"
                 autoFocus
                 style={{
                   width: "100%", background: "#030e1e",
@@ -2424,7 +2638,7 @@ export default function App() {
                 color: "#7e8ca0", fontSize: 10, marginBottom: 12, textAlign: "center",
               }}>여러 명 선택 시 SPLIT(찹) 처리</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {getAlivePlayers(3).map(seat => {
+                {getAlivePlayers(streetList.length - 1).map(seat => {
                   const isSel = selectedWinners.includes(seat.id);
                   return (
                     <button
@@ -2487,7 +2701,7 @@ export default function App() {
               {/* 확정 버튼 */}
               <button
                 onClick={() => {
-                  const winnerSeats = getAlivePlayers(3).filter(s => selectedWinners.includes(s.id));
+                  const winnerSeats = getAlivePlayers(streetList.length - 1).filter(s => selectedWinners.includes(s.id));
                   if (winnerSeats.length > 0) {
                     finalizeWinners(winnerSeats);
                     setSelectedWinners([]);
@@ -2613,19 +2827,7 @@ export default function App() {
               {(() => {
                 const nextPlayer = getNextToAct();
 
-                if (!nextPlayer) {
-                  return (
-                    <div style={{
-                      background: "#0a2e1e",
-                      border: "1px dashed #10b981",
-                      borderRadius: 10, padding: "20px 12px",
-                      textAlign: "center",
-                      color: "#10b981", fontSize: 12, letterSpacing: 2,
-                    }}>
-                      ✓ 라운드 완료 — 다음 스트리트로
-                    </div>
-                  );
-                }
+                if (!nextPlayer) return null; // 라운드 완료 → 아래 '다음 버튼'이 활성화됨
 
                 const handCardCount = currentHand.cardCount || holeCardCount;
                 // 드로우 게임: 그 시점 스냅샷(드로우 후 핸드). 비드로우/딜은 holeCards.
@@ -2861,6 +3063,38 @@ export default function App() {
                 );
               })()}
 
+              {/* 다음 스트리트 / 위너 버튼 (라운드 완료 시 활성) — 베팅 패널 자리 */}
+              {(() => {
+                const complete = isRoundComplete();
+                const actionableCount = getActionablePlayers().length;
+                const goToShowdown = actionableCount <= 1;
+                const lastIdx = streetList.length - 1;
+                const isGold = currentStreet === lastIdx || goToShowdown;
+                return (
+                  <button
+                    onClick={nextStreet}
+                    disabled={!complete}
+                    style={{
+                      width: "100%", marginTop: 12, padding: "15px 12px",
+                      background: !complete ? "#070f1c"
+                        : isGold ? "linear-gradient(135deg, #f59e0b, #b45309)"
+                          : "linear-gradient(135deg, #1a3a8f, #0f2060)",
+                      border: !complete ? "1px solid #1a2d45" : "none",
+                      borderRadius: 12,
+                      color: !complete ? "#1a2d45" : "#fff",
+                      fontSize: 14, fontWeight: 900, letterSpacing: 2,
+                      cursor: !complete ? "not-allowed" : "pointer",
+                      boxShadow: complete ? (isGold ? "0 0 20px rgba(245,158,11,.4)" : "0 0 16px rgba(26,58,143,.4)") : "none",
+                      opacity: !complete ? .5 : 1,
+                    }}
+                  >
+                    {goToShowdown ? "🏆 SHOWDOWN → WINNER 선택"
+                      : currentStreet < lastIdx ? `→ ${STREET_SHORT[streetList[currentStreet + 1]]} 로 이동`
+                        : "🏆 WINNER 선택"}
+                  </button>
+                );
+              })()}
+
               {/* 누적 액션 로그 (Pre부터 현재까지 전체) */}
               {(() => {
                 const hasAny = streetList.some(s =>
@@ -2928,41 +3162,85 @@ export default function App() {
                 })}
               </div>
 
-              {/* 다음 버튼 */}
-              {(() => {
-                const actionableCount = getActionablePlayers().length;
-                const goToShowdown = actionableCount <= 1;
-                const lastIdx = streetList.length - 1;
-                const isGold = currentStreet === lastIdx || goToShowdown;
+              {/* 승률 계산 (홀덤 전용) — 스트리트 선택해서 그 상황 승률 보기 */}
+              {GAME_TYPES[currentHand.gameType]?.cards === 2 && (() => {
+                const eligible = equityEligible().length;
+                const ready = eligible >= 2;
                 return (
-                  <button
-                    onClick={nextStreet}
-                    disabled={!isRoundComplete()}
-                    style={{
-                      width: "100%", marginTop: 14, padding: "13px",
-                      background: !isRoundComplete() ? "#070f1c"
-                        : isGold
-                          ? "linear-gradient(135deg, #f59e0b, #b45309)"
-                          : "linear-gradient(135deg, #1a3a8f, #0f2060)",
-                      border: !isRoundComplete() ? "1px solid #1a2d45" : "none",
-                      borderRadius: 10,
-                      color: !isRoundComplete() ? "#1a2d45" : "#fff",
-                      fontSize: 13, fontWeight: 900,
-                      cursor: !isRoundComplete() ? "not-allowed" : "pointer",
-                      letterSpacing: 2,
-                      boxShadow: isGold && isRoundComplete()
-                        ? "0 0 20px rgba(245,158,11,.4)" : "none",
-                      opacity: !isRoundComplete() ? .5 : 1,
-                    }}
-                  >
-                    {goToShowdown
-                      ? "🏆 SHOWDOWN → WINNER 선택"
-                      : currentStreet < lastIdx
-                        ? `→ ${STREET_SHORT[streetList[currentStreet + 1]]} 로 이동`
-                        : "🏆 WINNER 선택"}
-                  </button>
+                  <div style={{
+                    marginTop: 12, padding: "10px 12px",
+                    background: "#020a14", border: "1px solid #0f1f35", borderRadius: 8,
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: ready ? 8 : 0 }}>
+                      <span style={{ color: "#0ea5e9", fontSize: 9, fontWeight: 900, letterSpacing: 1, fontFamily: MONO }}>📊 승률</span>
+                      <span style={{ marginLeft: "auto", color: "#64748b", fontSize: 9, letterSpacing: 1 }}>
+                        {ready ? `${eligible}명 비교` : "문양 입력 필요"}
+                      </span>
+                    </div>
+                    {ready && (
+                      <div style={{ display: "flex", gap: 6 }}>
+                        {streetList.map(s => {
+                          const sel = equityStreet === s;
+                          const need = BOARD_COUNT_BY_STREET[s] || 0;
+                          const have = (currentHand.board || []).slice(0, need).filter(cardIsSuited).length;
+                          const boardReady = have >= need;
+                          return (
+                            <button key={s}
+                              onClick={() => runEquityFor(s)}
+                              disabled={equityBusy}
+                              style={{
+                                flex: 1, padding: "8px 4px", borderRadius: 7,
+                                background: sel ? "linear-gradient(135deg,#0ea5e9,#0369a1)" : "transparent",
+                                border: `1px solid ${sel ? "#0ea5e9" : boardReady ? "#1e3a52" : "#142235"}`,
+                                color: sel ? "#fff" : boardReady ? "#9fb3c8" : "#3a4a5e",
+                                fontSize: 11, fontWeight: 800, letterSpacing: 1,
+                                cursor: equityBusy ? "wait" : "pointer", fontFamily: MONO,
+                              }}
+                            >{STREET_SHORT[s]}</button>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {equityBusy && (
+                      <div style={{ marginTop: 8, color: "#7dd3fc", fontSize: 10 }}>계산 중…</div>
+                    )}
+                    {equityResult?.error && (
+                      <div style={{ marginTop: 8, color: "#f59e0b", fontSize: 10 }}>{equityResult.error}</div>
+                    )}
+                    {equityResult?.players && (
+                      <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+                        {equityResult.players.map((p, i) => (
+                          <div key={p.seatId} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ width: 116, display: "inline-flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
+                              {p.position && (
+                                <span style={{ color: "#10b981", fontSize: 9, fontWeight: 700, minWidth: 22 }}>{p.position}</span>
+                              )}
+                              <span style={{ color: i === 0 ? "#10b981" : "#cbd5e1", fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name || "?"}</span>
+                              <span style={{ color: "#fbbf24", fontSize: 12, fontWeight: 900, fontFamily: MONO, whiteSpace: "nowrap" }}>{cardsToText(p.cards)}</span>
+                            </span>
+                            <div style={{ flex: 1, height: 14, background: "#071726", borderRadius: 7, overflow: "hidden", position: "relative" }}>
+                              <div style={{
+                                width: `${Math.round(p.equity * 100)}%`, height: "100%",
+                                background: i === 0 ? "linear-gradient(90deg,#10b981,#059669)" : "linear-gradient(90deg,#334155,#1e293b)",
+                                transition: "width .3s",
+                              }} />
+                            </div>
+                            <span style={{ width: 44, textAlign: "right", color: i === 0 ? "#10b981" : "#94a3b8", fontSize: 12, fontWeight: 900, fontFamily: MONO }}>
+                              {(p.equity * 100).toFixed(1)}%
+                            </span>
+                          </div>
+                        ))}
+                        <div style={{ color: "#475569", fontSize: 8, letterSpacing: 1, marginTop: 2 }}>
+                          {(equityResult.street ? STREET_SHORT[equityResult.street] + " 기준 · " : "")}
+                          {equityResult.exact ? "정확 계산(완전열거)" : `몬테카를로 ${(equityResult.iterations / 1000).toFixed(0)}k 샘플 · 타이 포함 지분`}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 );
               })()}
+
             </div>
           )}
 
