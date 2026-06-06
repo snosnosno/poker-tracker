@@ -2829,8 +2829,6 @@ export default function App() {
                 }}>↶</button>
                   );
                 })()}
-                  );
-                })()}
                 <button onClick={discardHand} title="이 핸드 취소(삭제)" style={{
                   padding: "5px 12px",
                   background: "transparent", border: "1.5px solid #7a3030",
