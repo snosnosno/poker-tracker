@@ -41,7 +41,7 @@ function boardSegmentText(board) {
   for (const [a, b] of segs) {
     const cards = [];
     for (let i = a; i < b; i++) {
-      if (board[i] && board[i] !== CARD_UNKNOWN) cards.push(cardLabel(board[i]));
+      if (board[i] && board[i] !== CARD_UNKNOWN) cards.push(cardLabelL(board[i]));
     }
     if (cards.length) out.push(cards.join(" "));
   }
@@ -53,6 +53,7 @@ const ACTIONS = [
   { id: "bet",    label: "BET",    color: "#22c55e" },
   { id: "raise",  label: "RAISE",  color: "#ef4444" },
   { id: "call",   label: "CALL",   color: "#3b82f6" },
+  { id: "allincall", label: "ALL-IN CALL", lines: ["ALL-IN", "CALL"], color: "#818cf8" },
   { id: "check",  label: "CHECK",  color: "#94a3b8" },
   { id: "fold",   label: "FOLD",   color: "#7e8ca0" },
   { id: "allin",  label: "ALL-IN", color: "#8b5cf6" },
@@ -104,8 +105,8 @@ const clampCardCount = (n) => {
   return Math.min(MAX_CARD_COUNT, Math.max(MIN_CARD_COUNT, v));
 };
 
-// 베팅 금액 입력 대상 액션 (사이징)
-const AMOUNT_ACTIONS = new Set(["open", "bet", "raise", "allin"]);
+// 베팅 금액 입력 대상 액션 (사이징). ALL-IN CALL도 올인 금액 기록 허용.
+const AMOUNT_ACTIONS = new Set(["open", "bet", "raise", "allin", "allincall"]);
 
 // 숫자 입력 + 단위(없음/k/m)로 표시 문자열 생성. 무효/빈값이면 null.
 // 예) ("23.5","k")→"23.5k", ("23500","")→"23500", ("1","m")→"1m", ("100","")→"100"
@@ -159,6 +160,19 @@ function cardsToText(cards) {
   return sorted.map(cardLabel).join("");
 }
 
+// 로그 전용 표기: 문양을 기호(♥) 대신 글자(h)로. 예) "Kh Qs", 슈트 미정이면 랭크만.
+function cardLabelL(c) {
+  if (!c || c === CARD_UNKNOWN) return "?";
+  return SUIT_SYMBOL[c[1]] ? c[0] + c[1] : c[0];
+}
+function cardsToTextL(cards) {
+  if (!cards) return "";
+  const valid = cards.filter(Boolean);
+  if (valid.length === 0) return "";
+  const sorted = [...valid].sort((a, b) => (RANK_VALUE[b[0]] || 0) - (RANK_VALUE[a[0]] || 0));
+  return sorted.map(cardLabelL).join("");
+}
+
 // 같은 카드 표기(cardsToText)를 2명 이상이 가진 seat들의 Set (로그에서 이름 병기 구분용)
 function computeDupCardSeats(hand) {
   const holeCards = hand?.holeCards || {};
@@ -182,10 +196,11 @@ function getActionLabel(entries, index) {
   const e = entries[index];
   if (e.action !== "raise") return ACTIONS.find(a => a.id === e.action)?.label;
 
-  // 이전까지의 raise + open 횟수 합산 (모두 1단계 ↑)
+  // 이전까지의 raise + open + all-in 횟수 합산 (모두 1단계 ↑, 올인=레이즈 취급)
   let aggCount = 0;
   for (let i = 0; i < index; i++) {
-    if (entries[i].action === "raise" || entries[i].action === "open") aggCount++;
+    const ai = entries[i].action;
+    if (ai === "raise" || ai === "open" || ai === "allin") aggCount++;
   }
   // 0개 이전 = 첫 raise (포스트플랍) → RAISE
   // 1개 이전 (open 1개 또는 raise 1개) → 3-BET
@@ -281,7 +296,7 @@ function handToText(hand) {
     const seenSeats = new Set();
     entries.forEach((e, i) => {
       // 카드: 그 스트리트 시점 핸드 (드로우면 라운드 스냅샷, 아니면 딜/홀카드)
-      const handText = cardsToText(handAtStreet(hand, e.seatId, sIdx));
+      const handText = cardsToTextL(handAtStreet(hand, e.seatId, sIdx));
       const label = getActionLabel(entries, i);
       const isFirstForPlayer = !seenSeats.has(e.seatId);
       seenSeats.add(e.seatId);
@@ -328,7 +343,7 @@ function handToText(hand) {
   // Winner: 이름 + 최종 핸드 (드로우=마지막 스냅샷, 비드로우=딜/홀카드). 스플릿은 이름만.
   let winnerLine = `Winner: ${hand.winnerName || "—"}`;
   if (hand.winnerSeatId != null && !hand.isSplit) {
-    const wh = cardsToText(handAtStreet(hand, hand.winnerSeatId, SL.length - 1));
+    const wh = cardsToTextL(handAtStreet(hand, hand.winnerSeatId, SL.length - 1));
     if (wh) winnerLine += ` ${wh}`;
   }
   lines.push(winnerLine);
@@ -476,12 +491,12 @@ function computeActionablePlayers(hand, streetIdx) {
   for (let i = 0; i < streetIdx; i++) {
     (hand.streets[SL[i]] || []).forEach(a => {
       if (a.action === "fold") foldedIds.add(a.seatId);
-      if (a.action === "allin") allInIds.add(a.seatId);
+      if (a.action === "allin" || a.action === "allincall") allInIds.add(a.seatId);
     });
   }
   hand.streets[SL[streetIdx]].forEach(a => {
     if (a.action === "fold") foldedIds.add(a.seatId);
-    if (a.action === "allin") allInIds.add(a.seatId);
+    if (a.action === "allin" || a.action === "allincall") allInIds.add(a.seatId);
   });
   return hand.seats.filter(s => !foldedIds.has(s.id) && !allInIds.has(s.id));
 }
@@ -823,7 +838,7 @@ function AmountChip({ text, size = "sm" }) {
 // size: "sm"(라이브 로그) | "md"(히스토리/리캡)
 function ActionEntry({ hand, entries, i, isPreflop, isFirstForPlayer, dupCardSeats, size = "sm", streetIdx = 0 }) {
   const e = entries[i];
-  const cardsText = cardsToText(handAtStreet(hand, e.seatId, streetIdx));
+  const cardsText = cardsToTextL(handAtStreet(hand, e.seatId, streetIdx));
   const label = getActionLabel(entries, i);
   const isNBet = label && label.endsWith("-BET");
   const isDrawStreet = streetIsDraw(hand, streetIdx);
@@ -959,7 +974,7 @@ function BoardLine({ hand, size = "md" }) {
       {segCards.map((cards, si) => (
         <React.Fragment key={si}>
           {si > 0 && <span style={{ color: "#475569", fontSize: size === "md" ? 16 : 13, margin: "0 3px" }}>|</span>}
-          {cards.map((c, ci) => <CardChip key={ci} card={c} size={size === "md" ? "md" : "sm"} />)}
+          {cards.map((c, ci) => <CardChip key={ci} card={c} size={size === "md" ? "md" : "sm"} letters />)}
         </React.Fragment>
       ))}
     </div>
@@ -970,7 +985,7 @@ function BoardLine({ hand, size = "md" }) {
 function WinnerLine({ hand, size = "md" }) {
   const SL = streetsOf(hand);
   const wh = (hand.winnerSeatId != null && !hand.isSplit)
-    ? cardsToText(handAtStreet(hand, hand.winnerSeatId, SL.length - 1)) : "";
+    ? cardsToTextL(handAtStreet(hand, hand.winnerSeatId, SL.length - 1)) : "";
   return (
     <>
       <div style={{ borderTop: "1px dashed #536583", marginTop: size === "md" ? 10 : 8, paddingTop: 8, color: "#7e8ca0", fontSize: 10, letterSpacing: 2 }}>
@@ -999,7 +1014,7 @@ function HandLog({ hand, size = "md" }) {
           {hand.seats.filter(s => hand.holeCards?.[s.id]?.some(Boolean)).map(s => (
             <span key={s.id} style={{ marginRight: 10, display: "inline-flex", alignItems: "center", gap: 4 }}>
               <span style={{ color: "#94a3b8", fontSize: 11 }}>{s.name}</span>
-              {hand.holeCards[s.id].map((c, ci) => <CardChip key={ci} card={c} size="sm" />)}
+              {hand.holeCards[s.id].map((c, ci) => <CardChip key={ci} card={c} size="sm" letters />)}
             </span>
           ))}
         </div>
@@ -1017,7 +1032,7 @@ function HandLog({ hand, size = "md" }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // 카드 시각화
 // ══════════════════════════════════════════════════════════════════════════════
-function CardChip({ card, size = "sm" }) {
+function CardChip({ card, size = "sm", letters = false }) {
   if (!card) return null;
   const suit = SUITS.find(s => s.id === card[1]);
   const isNoSuit = !suit; // 'x' 같은 placeholder
@@ -1060,7 +1075,7 @@ function CardChip({ card, size = "sm" }) {
       gap: 1,
     }}>
       <span style={{ fontSize: size === "sm" ? 10 : 14 }}>{card[0]}</span>
-      <span style={{ fontSize: size === "sm" ? 9 : 13 }}>{suit.label}</span>
+      <span style={{ fontSize: size === "sm" ? 9 : 13 }}>{letters ? card[1] : suit.label}</span>
     </div>
   );
 }
@@ -2084,7 +2099,7 @@ export default function App() {
       // 프리플랍: 베팅 없을 때 BB 옵션만 체크 허용
       if (currentStreet === 0 && player.position !== "BB") return true;
     }
-    if (actionId === "call") {
+    if (actionId === "call" || actionId === "allincall") {
       if (currentStreet > 0 && !someoneBet) return true;
       if (lastAggressive?.seatId === player.id) return true;
     }
@@ -2451,7 +2466,7 @@ export default function App() {
                     (currentHand.streets[street] || []).forEach(a => {
                       if (a.seatId === seat.id) {
                         if (a.action === "fold") isFolded = true;
-                        if (a.action === "allin") isAllIn = true;
+                        if (a.action === "allin" || a.action === "allincall") isAllIn = true;
                       }
                     });
                   }
@@ -3019,7 +3034,7 @@ export default function App() {
                       </div>
                     )}
 
-                    {/* 베팅 금액 (선택) — OPEN/BET/RAISE/ALL-IN에만 적용 */}
+                    {/* 베팅 금액 (선택) — OPEN/BET/RAISE/ALL-IN/ALL-IN CALL에 적용 */}
                     <div style={{
                       display: "flex", alignItems: "center", gap: 6, marginBottom: 8,
                     }}>
@@ -3095,7 +3110,13 @@ export default function App() {
                               position: "relative",
                             }}
                           >
-                            {action.label}
+                            {action.lines ? (
+                              <span style={{ display: "flex", flexDirection: "column", lineHeight: 1.05, alignItems: "center" }}>
+                                {action.lines.map((l, k) => (
+                                  <span key={k} style={{ fontSize: 10 }}>{l}</span>
+                                ))}
+                              </span>
+                            ) : action.label}
                           </button>
                         );
                       })}
