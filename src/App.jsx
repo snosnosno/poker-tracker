@@ -1147,15 +1147,15 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
     if (!open) return;
     const handleKey = (e) => {
       const k = e.key.toLowerCase();
-      if (k === "enter") { commit(picksRef.current); return; }
-      if (k === "escape") { onClose(); return; }
+      if (k === "enter") { e.preventDefault(); commit(picksRef.current); return; }
+      if (k === "escape") { e.preventDefault(); onClose(); return; }
       // ? 입력: '0' / '/' / '?'
-      if (k === "0" || k === "/" || k === "?") { fillSlot(null, CARD_UNKNOWN); pendingSuitSlotRef.current = null; return; }
+      if (k === "0" || k === "/" || k === "?") { e.preventDefault(); fillSlot(null, CARD_UNKNOWN); pendingSuitSlotRef.current = null; return; }
       // 슈트키: 직전 랭크 카드에 문양 지정 (랭크키와 안 겹침)
-      if (k === "h" || k === "d" || k === "c" || k === "s") { setSuit(k); return; }
+      if (k === "h" || k === "d" || k === "c" || k === "s") { e.preventDefault(); setSuit(k); return; }
       const lookupKey = k === "1" ? "a" : k; // '1' 도 A
       const gi = RANK_KEYS.indexOf(lookupKey);
-      if (gi >= 0) placeRank(null, RANK_GRID[gi]); // 슈트 미지정(placeholder 'x')
+      if (gi >= 0) { e.preventDefault(); placeRank(null, RANK_GRID[gi]); } // 슈트 미지정(placeholder 'x')
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
@@ -1587,6 +1587,116 @@ function RecapModal({ hand, onClose, onReopen }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// 사용 설명서 모달
+// ══════════════════════════════════════════════════════════════════════════════
+function HelpModal({ onClose }) {
+  const SECTIONS = [
+    { t: "화면 구성", lines: [
+      "위 — 테이블: 좌석·딜러 버튼·현재 스트리트·액션할 사람",
+      "가운데 — 입력 패널: 스트리트 탭·보드·금액·액션 버튼",
+      "우측 상단 — TABLE(테이블) / LOG(지난 핸드)",
+    ] },
+    { t: "처음 세팅 (한 번만)", lines: [
+      "게임 선택: 위쪽 칩에서 종류(홀덤·PLO·드로우)",
+      "빈 좌석(+) 탭 → 이름·포지션 입력 → Enter",
+      "딜러 버튼 위치 지정, 자리 바뀌면 자리교체(⇄)",
+      "좌석·게임·버튼은 자동 저장 (다시 켜도 유지)",
+    ] },
+    { t: "한 핸드 기록 (핵심)", lines: [
+      "새 핸드 시작 → PREFLOP",
+      "카드 칩(✎) 탭 → 랭크·문양 선택 (문양은 나중에 추가 가능)",
+      "다음 액션할 사람 자동 표시 → 금액 입력 후 액션 버튼",
+      "OPEN·BET·RAISE·CALL·CHECK·FOLD / ALL-IN · ALL-IN CALL",
+      "FLOP/TURN/RIVER에서 점선 슬롯 탭 → 보드 카드 입력",
+      "라운드 끝 → '다음 스트리트로', 마지막 → 'WINNER 선택'",
+      "승자 선택(분할 가능). 전원 폴드면 자동 종료",
+    ] },
+    { t: "되돌리기 ↶", lines: [
+      "액션을 하나씩 취소",
+      "스트리트가 비면 한 번 더 눌러 직전 스트리트로",
+      "핸드 통째로 버리기: ✕",
+    ] },
+    { t: "드로우 게임 (2-7TD·Badugi 등)", lines: [
+      "보드 없음, DRAW 1·2·3 단계로 진행",
+      "핸드 칩 탭 → 카드 교환 입력",
+      "교환 장수(D2)·PAT(안 바꿈) 자동 표기",
+    ] },
+    { t: "승률 (홀덤 전용)", lines: [
+      "홀카드 입력되면 승률 패널 표시",
+      "Pre/Flop/Turn/River 탭 = 시점별 승률",
+      "보드는 문양까지 입력돼야 계산",
+    ] },
+    { t: "로그 / 복사", lines: [
+      "보드 = 맨 위 한 줄(플랍 | 턴 | 리버), 문양은 글자(s/h/d/c)",
+      "복사 버튼으로 전체 로그를 텍스트로 복사",
+      "지난 핸드 = 상단 LOG 화면에서 다시 보기",
+    ] },
+    { t: "단축키 (외장 키보드)", lines: [
+      "Enter = 다음 스트리트 / Z = 되돌리기 / N = 새 핸드",
+      "카드창: Enter 확정·Esc 닫기, 랭크 a~k·숫자, 문양 h/d/c/s",
+      "위너: 숫자 토글·Enter 확정·Esc 취소",
+    ] },
+    { t: "팁 & 주의", lines: [
+      "문양 입력 권장 — 승률·로그 정확도 ↑",
+      "금액은 선택 — 안 넣어도 액션 기록됨",
+      "OPEN 뒤 레이즈 = 3-BET·4-BET… (올인도 레이즈로 카운트)",
+      "진행 중 핸드는 미저장 — 승자 선택 전 종료 시 소실 가능",
+    ] },
+  ];
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, zIndex: 200,
+      background: "rgba(0,0,0,.75)", display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "flex-start", padding: "40px 12px",
+      overflowY: "auto",
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: "100%", maxWidth: 480, background: "#071425",
+        border: "1px solid #15324f", borderRadius: 14, padding: "18px 18px 22px",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", marginBottom: 14 }}>
+          <span style={{ color: "#10b981", fontSize: 16, fontWeight: 900, letterSpacing: 2 }}>♠ 사용 설명서</span>
+          <button onClick={onClose} style={{
+            marginLeft: "auto", padding: "4px 12px",
+            background: "transparent", border: "1px solid #2a3f5c",
+            borderRadius: 6, color: "#94a3b8", fontSize: 13, fontWeight: 800, cursor: "pointer",
+          }}>닫기 ✕</button>
+        </div>
+
+        <div style={{ color: "#7e8ca0", fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
+          라이브 테이블 옆에서 핸드를 기록하고, 홀덤이면 승률을 바로 보는 도구입니다.
+        </div>
+
+        {SECTIONS.map((s, i) => (
+          <div key={i} style={{ marginBottom: 14 }}>
+            <div style={{
+              color: "#0ea5e9", fontSize: 12, fontWeight: 900, letterSpacing: 1,
+              marginBottom: 6, paddingBottom: 4, borderBottom: "1px solid #122c45",
+            }}>{i + 1}. {s.t}</div>
+            {s.lines.map((ln, k) => (
+              <div key={k} style={{ display: "flex", gap: 7, marginBottom: 4 }}>
+                <span style={{ color: "#10b981", fontSize: 12, lineHeight: 1.5 }}>•</span>
+                <span style={{ color: "#cbd5e1", fontSize: 12.5, lineHeight: 1.5 }}>{ln}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+
+        <div style={{
+          marginTop: 6, padding: "10px 12px", background: "#06243a",
+          border: "1px solid #15324f", borderRadius: 8,
+          color: "#7dd3fc", fontSize: 11.5, lineHeight: 1.6,
+        }}>
+          <b>흐름 요약</b><br />
+          게임 선택 → 좌석·버튼 세팅 → 새 핸드 → 카드·액션 → 다음 스트리트 → 보드 → 승자 → 복사.
+          막히면 되돌리기(↶)로 한 단계씩.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // 메인 앱
 // ══════════════════════════════════════════════════════════════════════════════
 export default function App() {
@@ -1613,6 +1723,7 @@ export default function App() {
   const [editOut, setEditOut] = useState(false);
   const [posEditOpen, setPosEditOpen] = useState(false);
   const [activeView, setActiveView] = useState("table");
+  const [showHelp, setShowHelp] = useState(false);
   const [showWinnerPicker, setShowWinnerPicker] = useState(false);
   const [selectedWinners, setSelectedWinners] = useState([]); // 다중 위너 선택용 seatId 배열
   const [cardPickerFor, setCardPickerFor] = useState(null); // { seatId } | { board } | { showdown } | { edit }
@@ -2334,8 +2445,16 @@ export default function App() {
               fontSize: 10, fontWeight: 700, cursor: "pointer", letterSpacing: 1,
             }}>{v.toUpperCase()}</button>
           ))}
+          <button onClick={() => setShowHelp(true)} title="사용 설명서" style={{
+            padding: "4px 11px",
+            background: "transparent", border: "1px solid #1a2d45",
+            borderRadius: 5, color: "#7dd3fc",
+            fontSize: 12, fontWeight: 900, cursor: "pointer",
+          }}>?</button>
         </div>
       </div>
+
+      {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
 
       {/* ══════════════════ TABLE VIEW ══════════════════ */}
       {activeView === "table" && (
@@ -2577,7 +2696,7 @@ export default function App() {
                   width: "100%", background: "#030e1e",
                   border: "1px solid #1a2d45", borderRadius: 8,
                   padding: "8px 12px", color: "#e2e8f0",
-                  fontSize: 13, outline: "none", boxSizing: "border-box",
+                  fontSize: 16, outline: "none", boxSizing: "border-box",
                   fontFamily: MONO,
                 }}
               />
@@ -3054,7 +3173,7 @@ export default function App() {
                           background: "#020a14",
                           border: "1px solid #1a2d45",
                           borderRadius: 6, padding: "8px 10px",
-                          color: "#e2e8f0", fontSize: 14, fontWeight: 700,
+                          color: "#e2e8f0", fontSize: 16, fontWeight: 700,
                           fontFamily: MONO,
                         }}
                       />
