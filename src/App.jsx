@@ -73,7 +73,7 @@ const POSITION_LABEL = {
   "UTG": "UTG",
   "UTG+1": "+1",
   "MP": "+2",
-  "MP+1": "MP",
+  "MP+1": "+3",
   "HJ": "HJ",
   "CO": "CO",
   "D": "D",
@@ -107,6 +107,8 @@ const clampCardCount = (n) => {
 
 // 베팅 금액 입력 대상 액션 (사이징). ALL-IN CALL도 올인 금액 기록 허용.
 const AMOUNT_ACTIONS = new Set(["open", "bet", "raise", "allin", "allincall"]);
+// 액션 버튼 단축키 힌트 (표시 + 실제 키 바인딩)
+const ACTION_KEY = { fold: "F", check: "C" };
 
 // 숫자 입력 + 단위(없음/k/m)로 표시 문자열 생성. 무효/빈값이면 null.
 // 예) ("23.5","k")→"23.5k", ("23500","")→"23500", ("1","m")→"1m", ("100","")→"100"
@@ -1587,6 +1589,79 @@ function RecapModal({ hand, onClose, onReopen }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// 참가자 목록 모달
+// ══════════════════════════════════════════════════════════════════════════════
+function PlayersModal({ seats, buttonSeatId, onClose }) {
+  const occ = seats.filter(isOccupied); // 앉은 사람(아웃 포함), 물리 순서
+  const pos = computePositions(seats, buttonSeatId).positions;
+  const playing = occ.filter(s => !s.out);
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, zIndex: 200,
+      background: "rgba(0,0,0,.75)", display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "flex-start", padding: "40px 12px", overflowY: "auto",
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: "100%", maxWidth: 440, background: "#071425",
+        border: "1px solid #15324f", borderRadius: 14, padding: "18px",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", marginBottom: 14 }}>
+          <span style={{ color: "#10b981", fontSize: 15, fontWeight: 900, letterSpacing: 1 }}>
+            👥 참가자 {playing.length}명{occ.length > playing.length ? ` (+OUT ${occ.length - playing.length})` : ""}
+          </span>
+          <button onClick={onClose} style={{
+            marginLeft: "auto", padding: "4px 12px",
+            background: "transparent", border: "1px solid #2a3f5c",
+            borderRadius: 6, color: "#94a3b8", fontSize: 13, fontWeight: 800, cursor: "pointer",
+          }}>닫기 ✕</button>
+        </div>
+
+        {occ.length === 0 ? (
+          <div style={{ color: "#64748b", fontSize: 13, padding: "16px 4px", textAlign: "center" }}>
+            앉은 사람이 없습니다. 테이블의 빈 좌석(+)을 탭해 추가하세요.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {occ.map(s => {
+              const p = pos[s.id] || s.position || "";
+              const isBtn = s.id === buttonSeatId;
+              return (
+                <div key={s.id} style={{
+                  display: "flex", alignItems: "center", gap: 10,
+                  padding: "9px 12px", borderRadius: 8,
+                  background: s.out ? "#0a0f18" : "#03101f",
+                  border: `1px solid ${s.out ? "#1a2436" : "#13314c"}`,
+                  opacity: s.out ? 0.55 : 1,
+                }}>
+                  <span style={{ color: "#475569", fontSize: 11, fontWeight: 700, minWidth: 24, fontFamily: MONO }}>#{s.id + 1}</span>
+                  <span style={{
+                    minWidth: 38, textAlign: "center", color: "#10b981",
+                    fontSize: 11, fontWeight: 800, fontFamily: MONO,
+                  }}>{p || "—"}</span>
+                  <span style={{ color: "#e2e8f0", fontSize: 14, fontWeight: 800, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
+                  {isBtn && (
+                    <span style={{
+                      background: "#fbbf24", color: "#000", fontSize: 10, fontWeight: 900,
+                      padding: "1px 7px", borderRadius: 10, fontFamily: MONO,
+                    }}>D</span>
+                  )}
+                  {s.out && (
+                    <span style={{
+                      color: "#f59e0b", fontSize: 10, fontWeight: 800,
+                      border: "1px solid #5b4420", padding: "1px 6px", borderRadius: 4,
+                    }}>OUT</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // 사용 설명서 모달
 // ══════════════════════════════════════════════════════════════════════════════
 function HelpModal({ onClose }) {
@@ -1724,6 +1799,7 @@ export default function App() {
   const [posEditOpen, setPosEditOpen] = useState(false);
   const [activeView, setActiveView] = useState("table");
   const [showHelp, setShowHelp] = useState(false);
+  const [showPlayers, setShowPlayers] = useState(false);
   const [showWinnerPicker, setShowWinnerPicker] = useState(false);
   const [selectedWinners, setSelectedWinners] = useState([]); // 다중 위너 선택용 seatId 배열
   const [cardPickerFor, setCardPickerFor] = useState(null); // { seatId } | { board } | { showdown } | { edit }
@@ -2265,7 +2341,20 @@ export default function App() {
 
       // 핸드 진행 중
       if (currentHand) {
-        // 액션은 버튼 탭으로만 (숫자키는 금액 입력 전용 → 단축키 충돌 제거)
+        // F = FOLD, C = CHECK (현재 액터 기준, 비활성이면 무시)
+        const actor = getNextToAct();
+        if (actor) {
+          if (key === "f" && !isActionDisabled("fold", actor)) {
+            e.preventDefault();
+            logAction(actor.id, "fold", null);
+            return;
+          }
+          if (key === "c" && !isActionDisabled("check", actor)) {
+            e.preventDefault();
+            logAction(actor.id, "check", null);
+            return;
+          }
+        }
         // Enter = 다음 스트리트 (라운드 완료 시)
         if (key === "enter" && isRoundComplete()) {
           nextStreet();
@@ -2455,6 +2544,7 @@ export default function App() {
       </div>
 
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+      {showPlayers && <PlayersModal seats={seats} buttonSeatId={buttonSeatId} onClose={() => setShowPlayers(false)} />}
 
       {/* ══════════════════ TABLE VIEW ══════════════════ */}
       {activeView === "table" && (
@@ -2512,6 +2602,15 @@ export default function App() {
                 fontFamily: MONO,
               }}
             >⇄ 자리교체{swapMode ? " ON" : ""}</button>
+            <button
+              onClick={() => setShowPlayers(true)}
+              style={{
+                padding: "5px 12px",
+                background: "transparent", border: "1px solid #1a2d45",
+                borderRadius: 5, color: "#7dd3fc",
+                fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: MONO,
+              }}
+            >👥 참가자 {playingSeats.length}</button>
             {swapMode && (
               <span style={{ color: "#fbbf24", fontSize: 10 }}>
                 {swapFirst === null ? "옮길 자리를 탭하세요" : "바꿀 자리를 탭하세요 (같은 자리=취소)"}
@@ -3235,7 +3334,16 @@ export default function App() {
                                   <span key={k} style={{ fontSize: 10 }}>{l}</span>
                                 ))}
                               </span>
-                            ) : action.label}
+                            ) : (
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                                {action.label}
+                                {ACTION_KEY[action.id] && (
+                                  <span style={{ fontSize: 9, opacity: 0.55, fontWeight: 700, letterSpacing: 0 }}>
+                                    [{ACTION_KEY[action.id]}]
+                                  </span>
+                                )}
+                              </span>
+                            )}
                           </button>
                         );
                       })}
