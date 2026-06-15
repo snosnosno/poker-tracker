@@ -108,7 +108,7 @@ const clampCardCount = (n) => {
 // 베팅 금액 입력 대상 액션 (사이징). ALL-IN CALL도 올인 금액 기록 허용.
 const AMOUNT_ACTIONS = new Set(["open", "bet", "raise", "allin", "allincall"]);
 // 액션 버튼 단축키 힌트 (표시 + 실제 키 바인딩)
-const ACTION_KEY = { fold: "F", check: "C" };
+const ACTION_KEY = { open: "O", bet: "B", raise: "R", call: "L", fold: "F", check: "C", allin: "A" };
 
 // 숫자 입력 + 단위(없음/k/m)로 표시 문자열 생성. 무효/빈값이면 null.
 // 예) ("23.5","k")→"23.5k", ("23500","")→"23500", ("1","m")→"1m", ("100","")→"100"
@@ -1707,7 +1707,9 @@ function HelpModal({ onClose }) {
       "지난 핸드 = 상단 LOG 화면에서 다시 보기",
     ] },
     { t: "단축키 (외장 키보드)", lines: [
-      "Enter = 다음 스트리트 / Z = 되돌리기 / N = 새 핸드",
+      "H = 카드 피커 열기 / Z = 되돌리기 / Enter = 다음 스트리트 / N = 새 핸드",
+      "O = OPEN / B = BET / R = RAISE / L = CALL / F = FOLD / C = CHECK / A = ALL-IN",
+      "금액 입력 후 O·B·R·A 누르면 그 금액으로 바로 기록",
       "카드창: Enter 확정·Esc 닫기, 랭크 a~k·숫자, 문양 h/d/c/s",
       "위너: 숫자 토글·Enter 확정·Esc 취소",
     ] },
@@ -2344,16 +2346,32 @@ export default function App() {
         // F = FOLD, C = CHECK (현재 액터 기준, 비활성이면 무시)
         const actor = getNextToAct();
         if (actor) {
-          if (key === "f" && !isActionDisabled("fold", actor)) {
+          if (key === "h") {
             e.preventDefault();
-            logAction(actor.id, "fold", null);
+            setCardPickerFor(
+              currentStreet === 0
+                ? { seatId: actor.id }
+                : { edit: { seatId: actor.id, streetIdx: currentStreet } }
+            );
             return;
           }
-          if (key === "c" && !isActionDisabled("check", actor)) {
-            e.preventDefault();
-            logAction(actor.id, "check", null);
-            return;
-          }
+          // 액션 단축키 (비활성이면 무시, 금액은 현재 입력값 그대로)
+          const amt = betAmount || null;
+          const tryAction = (id) => {
+            if (!isActionDisabled(id, actor)) {
+              e.preventDefault();
+              logAction(actor.id, id, AMOUNT_ACTIONS.has(id) ? amt : null);
+              return true;
+            }
+            return false;
+          };
+          if (key === "o") { tryAction("open"); return; }
+          if (key === "b") { tryAction("bet");  return; }
+          if (key === "r") { tryAction("raise"); return; }
+          if (key === "l") { tryAction("call");  return; }
+          if (key === "a") { tryAction("allin"); return; }
+          if (key === "f") { tryAction("fold");  return; }
+          if (key === "c") { tryAction("check"); return; }
         }
         // Enter = 다음 스트리트 (라운드 완료 시)
         if (key === "enter" && isRoundComplete()) {
@@ -3159,7 +3177,7 @@ export default function App() {
                       {currentStreet === 0 && (
                         <button
                           onClick={() => setCardPickerFor({ seatId: nextPlayer.id })}
-                          title="딜 카드 입력/수정"
+                          title="딜 카드 입력/수정 [H]"
                           style={{
                             display: "flex", gap: 3, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end",
                             background: "#06243a", border: "1.5px solid #38bdf8",
