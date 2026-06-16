@@ -108,7 +108,7 @@ const clampCardCount = (n) => {
 // 베팅 금액 입력 대상 액션 (사이징). ALL-IN CALL도 올인 금액 기록 허용.
 const AMOUNT_ACTIONS = new Set(["open", "bet", "raise", "allin", "allincall"]);
 // 액션 버튼 단축키 힌트 (표시 + 실제 키 바인딩)
-const ACTION_KEY = { open: "O", bet: "B", raise: "R", call: "L", fold: "F", check: "C", allin: "A" };
+const ACTION_KEY = { open: "O", bet: "B", raise: "R", call: "C", fold: "F", check: "SPC", allin: "A" };
 
 // 숫자 입력 + 단위(없음/k/m)로 표시 문자열 생성. 무효/빈값이면 null.
 // 예) ("23.5","k")→"23.5k", ("23500","")→"23500", ("1","m")→"1m", ("100","")→"100"
@@ -1149,7 +1149,7 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
     if (!open) return;
     const handleKey = (e) => {
       const k = e.key.toLowerCase();
-      if (k === "enter") { e.preventDefault(); commit(picksRef.current); return; }
+      if (k === "enter" || k === " ") { e.preventDefault(); commit(picksRef.current); return; }
       if (k === "escape") { e.preventDefault(); onClose(); return; }
       // ? 입력: '0' / '/' / '?'
       if (k === "0" || k === "/" || k === "?") { e.preventDefault(); fillSlot(null, CARD_UNKNOWN); pendingSuitSlotRef.current = null; return; }
@@ -2298,21 +2298,24 @@ export default function App() {
   // ── 키보드 단축키 ─────────────────────────────────────────────────────────
   useEffect(() => {
     const handleKey = (e) => {
-      // 입력창에 포커스 있으면 무시
-      const tag = e.target.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return;
-
       // 카드 선택 모달이 열려있으면 메인 단축키 무시 (모달이 자체 처리)
       if (cardPickerFor) return;
 
       const key = e.key.toLowerCase();
+      const tag = e.target.tagName;
+      const isInput = tag === "INPUT" || tag === "TEXTAREA";
 
-      // 리캡 모달 열림: C=복사, Enter/N=닫기
+      // 액션 단축키는 금액 입력칸 포커스 중에도 동작 (금액 입력 후 바로 단축키)
+      const ACTION_KEYS = new Set(["o","b","r","l","f","c","a","h","z"," "]);
+      if (isInput && !ACTION_KEYS.has(key)) return;
+
+      // 리캡 모달 열림: C=복사, Enter/N/Space=닫기
       if (recapHand) {
         if (key === "c") {
           const text = toSheetCell(handToText(recapHand));
           if (navigator.clipboard) navigator.clipboard.writeText(text);
-        } else if (key === "enter" || key === "n") {
+        } else if (key === "enter" || key === "n" || key === " ") {
+          e.preventDefault();
           setRecapHand(null);
         }
         return;
@@ -2365,16 +2368,18 @@ export default function App() {
             }
             return false;
           };
-          if (key === "o") { tryAction("open"); return; }
-          if (key === "b") { tryAction("bet");  return; }
+          if (key === "o") { tryAction("open");  return; }
+          if (key === "b") { tryAction("bet");   return; }
           if (key === "r") { tryAction("raise"); return; }
-          if (key === "l") { tryAction("call");  return; }
-          if (key === "a") { tryAction("allin"); return; }
+          if (key === "c") { tryAction("call");  return; }
           if (key === "f") { tryAction("fold");  return; }
-          if (key === "c") { tryAction("check"); return; }
+          if (key === "a") { tryAction("allin"); return; }
+          // Space: CHECK 우선, 불가하면 아래 다음스트리트/새핸드로 진행
+          if (key === " " && tryAction("check")) return;
         }
-        // Enter = 다음 스트리트 (라운드 완료 시)
-        if (key === "enter" && isRoundComplete()) {
+        // Enter/Space = 다음 스트리트 (라운드 완료 시)
+        if ((key === "enter" || key === " ") && isRoundComplete()) {
+          e.preventDefault();
           nextStreet();
           return;
         }
@@ -2384,8 +2389,9 @@ export default function App() {
           return;
         }
       } else {
-        // 핸드 없을 때 N or Enter = 새 핸드
-        if ((key === "n" || key === "enter") && playingSeats.length >= 2) {
+        // 핸드 없을 때 N / Enter / Space = 새 핸드
+        if ((key === "n" || key === "enter" || key === " ") && playingSeats.length >= 2) {
+          e.preventDefault();
           startHand();
         }
       }
