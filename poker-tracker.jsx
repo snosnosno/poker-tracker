@@ -340,7 +340,7 @@ function toSheetCell(text) {
   return '"' + String(text).replace(/"/g, '""') + '"';
 }
 
-function handToText(hand) {
+function handToText(hand, showEventName = true) {
   const lines = [];
   const isHeadsUp = (hand.seats?.length || 0) === 2;
 
@@ -409,9 +409,9 @@ function handToText(hand) {
     if (boardStr) lines.unshift(`Board: ${boardStr}`);
   }
 
-  // 이벤트명(게임 풀네임)을 로그 제일 위에
+  // 이벤트명(게임 풀네임)을 로그 제일 위에 (운영자 토글로 끌 수 있음)
   const gameName = GAME_TYPES[hand.gameType]?.name;
-  if (gameName) lines.unshift(`[ ${gameName} ]`);
+  if (showEventName && gameName) lines.unshift(`[ ${gameName} ]`);
 
   lines.push("=".repeat(13));
   // Winner: 이름 + 최종 핸드 (드로우=마지막 스냅샷, 비드로우=딜/홀카드). 스플릿은 이름만.
@@ -1582,13 +1582,13 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
 // ══════════════════════════════════════════════════════════════════════════════
 // 히스토리 카드
 // ══════════════════════════════════════════════════════════════════════════════
-function HandHistoryCard({ hand }) {
+function HandHistoryCard({ hand, showEventName = true }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const handleCopy = (e) => {
     e.stopPropagation();
-    const text = toSheetCell(handToText(hand));
+    const text = toSheetCell(handToText(hand, showEventName));
     if (navigator.clipboard) {
       navigator.clipboard.writeText(text).then(() => {
         setCopied(true);
@@ -1677,7 +1677,7 @@ function HandHistoryCard({ hand }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // 핸드 종료 리캡 모달
 // ══════════════════════════════════════════════════════════════════════════════
-function RecapModal({ hand, onClose, onReopen }) {
+function RecapModal({ hand, onClose, onReopen, showEventName = true }) {
   const [copied, setCopied] = useState(false);
 
   // 모달 닫을 때 copied 상태 리셋
@@ -1688,7 +1688,7 @@ function RecapModal({ hand, onClose, onReopen }) {
   if (!hand) return null;
 
   const handleCopy = () => {
-    const text = toSheetCell(handToText(hand));
+    const text = toSheetCell(handToText(hand, showEventName));
     if (navigator.clipboard) {
       navigator.clipboard.writeText(text).then(() => {
         setCopied(true);
@@ -2029,6 +2029,7 @@ export default function PokerTracker() {
   const [equityBusy, setEquityBusy] = useState(false);
   const [recapHand, setRecapHand] = useState(null); // 방금 끝난 핸드를 모달로 보여줌
   const [logCopied, setLogCopied] = useState(false); // Ctrl+C 로그 복사 피드백
+  const [showEventName, setShowEventName] = useState(() => loadFromStorage("pt_showevent", true)); // 복사 로그 최상단 이벤트명 표시 여부
   const [gameType, setGameType] = useState(() => {
     const g = loadFromStorage("pt_gametype", null);
     if (g && GAME_TYPES[g]) return g;
@@ -2064,6 +2065,11 @@ export default function PokerTracker() {
   useEffect(() => {
     try { window.localStorage.setItem("pt_gametype", JSON.stringify(gameType)); } catch {}
   }, [gameType]);
+
+  // 이벤트명 표시 토글 저장
+  useEffect(() => {
+    try { window.localStorage.setItem("pt_showevent", JSON.stringify(showEventName)); } catch {}
+  }, [showEventName]);
 
   // 진행 중 핸드(또는 리캡 떠 있을 때)는 게임 변경 잠금 → 편집 가능한 핸드와 항상 일치 보장
   const cardCountLocked = !!currentHand || !!recapHand;
@@ -2595,7 +2601,7 @@ export default function PokerTracker() {
         const h = recapHand || currentHand;
         if (h) {
           e.preventDefault();
-          const text = toSheetCell(handToText(h));
+          const text = toSheetCell(handToText(h, showEventName));
           if (navigator.clipboard) navigator.clipboard.writeText(text);
           setLogCopied(true);
         }
@@ -2609,7 +2615,7 @@ export default function PokerTracker() {
       // 리캡 모달 열림: C=복사, Enter/N/Space=닫기
       if (recapHand) {
         if (key === "c") {
-          const text = toSheetCell(handToText(recapHand));
+          const text = toSheetCell(handToText(recapHand, showEventName));
           if (navigator.clipboard) navigator.clipboard.writeText(text);
           setLogCopied(true);
         } else if (key === "enter" || key === "n" || key === " ") {
@@ -2711,7 +2717,7 @@ export default function PokerTracker() {
 
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [currentHand, currentStreet, cardPickerFor, recapHand, showWinnerPicker, selectedWinners, selectedHi, selectedLo, seats]);
+  }, [currentHand, currentStreet, cardPickerFor, recapHand, showWinnerPicker, selectedWinners, selectedHi, selectedLo, seats, showEventName]);
 
   // ── 위너 선택 → 핸드 종료 → 포지션 로테이션 ──────────────────────────────
   // 다중 위너 확정 (1명이면 단독, 2명+면 스플릿/찹)
@@ -4151,13 +4157,25 @@ export default function PokerTracker() {
               HAND HISTORY
             </span>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <button
+                onClick={() => setShowEventName(v => !v)}
+                title="복사 로그 최상단의 게임 이벤트명 표시 여부"
+                style={{
+                  background: showEventName ? "#0f2a1e" : "#0a1628",
+                  border: `1px solid ${showEventName ? "#10b981" : "#1a2d45"}`,
+                  borderRadius: 6, padding: "3px 10px",
+                  color: showEventName ? "#10b981" : "#64748b", fontSize: 10, fontWeight: 700,
+                  letterSpacing: 1, cursor: "pointer",
+                  fontFamily: MONO,
+                }}
+              >이벤트명 {showEventName ? "ON" : "OFF"}</button>
               {hands.length > 0 && (
                 <>
                   <button
                     onClick={() => {
                       // 핸드 하나당 한 셀(여러 줄), 핸드끼리는 세로(다음 행)로 배치
                       const all = hands.slice().reverse()
-                        .map(h => toSheetCell(handToText(h)))
+                        .map(h => toSheetCell(handToText(h, showEventName)))
                         .join("\n");
                       if (navigator.clipboard) navigator.clipboard.writeText(all);
                     }}
@@ -4201,7 +4219,7 @@ export default function PokerTracker() {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {hands.map(hand => (
-                <HandHistoryCard key={hand.id} hand={hand} />
+                <HandHistoryCard key={hand.id} hand={hand} showEventName={showEventName} />
               ))}
             </div>
           )}
@@ -4240,6 +4258,7 @@ export default function PokerTracker() {
         hand={recapHand}
         onClose={() => setRecapHand(null)}
         onReopen={reopenLastHand}
+        showEventName={showEventName}
       />
 
       {/* 로그 복사 피드백 토스트 (C / Ctrl+C) — 모달 위에도 보이도록 높은 zIndex */}

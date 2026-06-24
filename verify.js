@@ -1484,6 +1484,48 @@ check("스터드 H 단축키: 7칸 핸드 피커 (2장 아님)", () => {
   r.unmount();
 });
 
+check("이벤트명 토글: handToText 2번째 인자 false면 이벤트명 줄 생략", () => {
+  installGlobals({});
+  const I = loadInternals(src);
+  const hand = {
+    gameType: "holdem", streetList: I.GAME_TYPES.holdem.streets,
+    seats: [{ id: 0, name: "A", position: "#1" }], cardCount: 2,
+    holeCards: {}, studCards: {}, board: [null, null, null, null, null], roundHole: {},
+    streets: Object.fromEntries(I.GAME_TYPES.holdem.streets.map(s => [s, []])),
+  };
+  const withName = I.handToText(hand);           // 기본값 = 표시
+  const withNameExplicit = I.handToText(hand, true);
+  const without = I.handToText(hand, false);     // 토글 OFF
+  if (!withName.includes("[ No-Limit Hold'em ]")) throw new Error("기본값에서 이벤트명 누락");
+  if (withNameExplicit !== withName) throw new Error("true 명시와 기본값이 다름");
+  if (without.includes("[ No-Limit Hold'em ]")) throw new Error("false인데 이벤트명이 남음");
+  if (without.includes("No-Limit Hold'em")) throw new Error("false인데 게임명이 어딘가 남음");
+  // 이벤트명만 빠지고 나머지 줄(Winner 등)은 유지되어야
+  if (!without.includes("Winner:")) throw new Error("이벤트명 제거가 다른 줄까지 지움");
+  if (without.split("\n").length !== withName.split("\n").length - 1)
+    throw new Error("정확히 한 줄(이벤트명)만 제거되어야 함");
+});
+
+check("이벤트명 토글: LOG 버튼 ON↔OFF 클릭으로 라벨 전환", () => {
+  const r = mountGame("holdem", 3); const root = r.root;
+  clickByText(root, "LOG");
+  if (!/이벤트명 ON/.test(nodeText(root))) throw new Error("초기 상태가 ON이 아님");
+  clickByText(root, "이벤트명 ON");
+  if (!/이벤트명 OFF/.test(nodeText(root))) throw new Error("클릭 후 OFF로 안 바뀜");
+  clickByText(root, "이벤트명 OFF");
+  if (!/이벤트명 ON/.test(nodeText(root))) throw new Error("재클릭 후 ON 복귀 안 됨");
+  r.unmount();
+});
+
+check("이벤트명 토글: 저장값(pt_showevent=false)이면 마운트 시 OFF", () => {
+  installGlobals({ pt_showevent: JSON.stringify(false) });
+  const Comp = loadComponent(src);
+  let r; act(() => { r = TestRenderer.create(React.createElement(Comp)); });
+  clickByText(r.root, "LOG");
+  if (!/이벤트명 OFF/.test(nodeText(r.root))) throw new Error("저장된 false가 OFF로 반영 안 됨");
+  r.unmount();
+});
+
 // ── 결과 출력 ────────────────────────────────────────────────────
 let fail = 0;
 for (const [s, n, m] of results) {
