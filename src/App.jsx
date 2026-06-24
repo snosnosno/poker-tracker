@@ -12,18 +12,22 @@ const STREET_SHORT = {
 
 // 게임 타입 정의: 카드 장수 + 스트리트 구성 + 드로우 여부
 const GAME_TYPES = {
-  holdem: { label: "홀덤", cards: 2, streets: ["PREFLOP", "FLOP", "TURN", "RIVER"], draw: false },
-  plo4:   { label: "PLO4", cards: 4, streets: ["PREFLOP", "FLOP", "TURN", "RIVER"], draw: false },
-  plo5:   { label: "PLO5", cards: 5, streets: ["PREFLOP", "FLOP", "TURN", "RIVER"], draw: false },
-  plo6:   { label: "PLO6", cards: 6, streets: ["PREFLOP", "FLOP", "TURN", "RIVER"], draw: false },
-  td27:   { label: "2-7TD", cards: 5, streets: ["PREFLOP", "DRAW1", "DRAW2", "DRAW3"], draw: true },
-  tdA5:   { label: "A-5TD", cards: 5, streets: ["PREFLOP", "DRAW1", "DRAW2", "DRAW3"], draw: true },
-  badugi: { label: "Badugi", cards: 4, streets: ["PREFLOP", "DRAW1", "DRAW2", "DRAW3"], draw: true },
-  sd27:   { label: "2-7SD", cards: 5, streets: ["PREFLOP", "DRAW1"], draw: true },
-  stud7:  { label: "7-Stud", cards: 2, streets: ["3RD","4TH","5TH","6TH","7TH"], draw: false, stud: true },
-  razz:   { label: "Razz",   cards: 2, streets: ["3RD","4TH","5TH","6TH","7TH"], draw: false, stud: true },
+  holdem: { label: "NLH",     name: "No-Limit Hold'em",                  cards: 2, streets: ["PREFLOP", "FLOP", "TURN", "RIVER"], draw: false },
+  lhe:    { label: "LHE",     name: "Limit Hold'em",                     cards: 2, streets: ["PREFLOP", "FLOP", "TURN", "RIVER"], draw: false },
+  plo4:   { label: "PLO",     name: "Pot-Limit Omaha",                   cards: 4, streets: ["PREFLOP", "FLOP", "TURN", "RIVER"], draw: false },
+  plo8:   { label: "PLO8",    name: "Omaha Hi-Lo 8 or Better",           cards: 4, streets: ["PREFLOP", "FLOP", "TURN", "RIVER"], draw: false, hilo: true },
+  plo5:   { label: "PLO5",    name: "5-Card Pot-Limit Omaha",            cards: 5, streets: ["PREFLOP", "FLOP", "TURN", "RIVER"], draw: false },
+  plo6:   { label: "PLO6",    name: "6-Card Pot-Limit Omaha",            cards: 6, streets: ["PREFLOP", "FLOP", "TURN", "RIVER"], draw: false },
+  td27:   { label: "2-7 TD",  name: "2-7 Limit Triple Draw",             cards: 5, streets: ["PREFLOP", "DRAW1", "DRAW2", "DRAW3"], draw: true },
+  tdA5:   { label: "A-5 TD",  name: "A-5 Triple Draw",                   cards: 5, streets: ["PREFLOP", "DRAW1", "DRAW2", "DRAW3"], draw: true },
+  badugi: { label: "Badugi",  name: "Badugi",                            cards: 4, streets: ["PREFLOP", "DRAW1", "DRAW2", "DRAW3"], draw: true },
+  sd27:   { label: "2-7 SD",  name: "2-7 No-Limit Single Draw",          cards: 5, streets: ["PREFLOP", "DRAW1"], draw: true },
+  stud7:  { label: "STUD",    name: "Seven Card Stud",                   cards: 2, streets: ["3RD","4TH","5TH","6TH","7TH"], draw: false, stud: true },
+  stud8:  { label: "STUD 8",  name: "Seven Card Stud Hi-Lo 8 or Better", cards: 2, streets: ["3RD","4TH","5TH","6TH","7TH"], draw: false, stud: true, hilo: true },
+  razz:   { label: "Razz",    name: "Razz",                              cards: 2, streets: ["3RD","4TH","5TH","6TH","7TH"], draw: false, stud: true },
 };
-const GAME_ORDER = ["holdem", "plo4", "plo5", "plo6", "td27", "tdA5", "badugi", "sd27", "stud7", "razz"];
+// UI에 노출할 게임 버튼 (사용자 지정 순서). plo5/plo6/tdA5/badugi는 데이터 호환용으로만 남기고 버튼에선 제외.
+const GAME_ORDER = ["holdem", "lhe", "razz", "stud7", "stud8", "plo8", "plo4", "sd27", "td27"];
 // 스터드 업카드가 있는 스트리트 (7TH는 다운카드)
 const STUD_UP_STREETS = new Set(["3RD","4TH","5TH","6TH"]);
 // 스터드 카드 7칸 모델: studCards[seatId] = [c0..c6]
@@ -404,6 +408,10 @@ function handToText(hand) {
     const boardStr = boardSegmentText(hand.board);
     if (boardStr) lines.unshift(`Board: ${boardStr}`);
   }
+
+  // 이벤트명(게임 풀네임)을 로그 제일 위에
+  const gameName = GAME_TYPES[hand.gameType]?.name;
+  if (gameName) lines.unshift(`[ ${gameName} ]`);
 
   lines.push("=".repeat(13));
   // Winner: 이름 + 최종 핸드 (드로우=마지막 스냅샷, 비드로우=딜/홀카드). 스플릿은 이름만.
@@ -1397,7 +1405,9 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
         <div style={{
           color: "#10b981", fontSize: 11, letterSpacing: 2, marginBottom: 14,
           textAlign: "center",
-        }}>카드 선택 · 랭크 + 문양(선택) · {cardCount}장 {cardCount > 1 ? "· ←→ 이동" : ""}</div>
+        }}>카드 선택 · 랭크+문양 · {cardCount}장{cardCount > 1
+          ? <span style={{ color: "#fbbf24" }}>{`  ·  ←→ 이동  ·  ${activeSlot + 1}/${cardCount}`}{slotMeta && slotMeta[activeSlot] ? ` (${slotMeta[activeSlot].label}${slotMeta[activeSlot].face === "up" ? "▲" : "▽"})` : ""}</span>
+          : ""}</div>
 
         {/* 선택된 카드 미리보기 (cardCount장) */}
         <div style={{
@@ -1408,9 +1418,9 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
             const isActive = activeSlot === i;
             const meta = slotMeta && slotMeta[i];
             return (
-              <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+              <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
                 {meta && (
-                  <span style={{ fontSize: 8, fontWeight: 800, letterSpacing: 0.3, color: meta.face === "up" ? "#38bdf8" : "#64748b" }}>
+                  <span style={{ fontSize: 8, fontWeight: 800, letterSpacing: 0.3, color: isActive ? "#fbbf24" : (meta.face === "up" ? "#38bdf8" : "#64748b") }}>
                     {meta.label}{meta.face === "up" ? "▲" : "▽"}
                   </span>
                 )}
@@ -1418,10 +1428,10 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
                   onClick={() => p ? clearSlot(i) : setActiveSlot(i)}
                   style={{
                     width: pvW, height: pvH,
-                    background: p ? "#fafafa" : "transparent",
-                    border: `2.5px ${p ? "solid transparent" : "dashed"} ${
-                      isActive ? "#fbbf24" : "#1a2d45"
-                    }`,
+                    background: p ? "#fafafa" : (isActive ? "#161203" : "transparent"),
+                    border: isActive
+                      ? "3px solid #fbbf24"
+                      : `2.5px ${p ? "solid #2a4a6e" : "dashed #1a2d45"}`,
                     borderRadius: 8,
                     display: "flex", alignItems: "center", justifyContent: "center",
                     color: "#0f172a",
@@ -1429,7 +1439,9 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
                     fontWeight: 900,
                     fontSize: pvFont,
                     cursor: "pointer",
-                    boxShadow: isActive && !p ? "0 0 12px rgba(251,191,36,.4)" : "none",
+                    boxShadow: isActive ? "0 0 14px rgba(251,191,36,.55)" : "none",
+                    transform: isActive ? "translateY(-2px)" : "none",
+                    transition: "transform .08s",
                     animation: isActive && !p ? "cardPulse 1.2s infinite" : "none",
                   }}
                 >
@@ -1439,9 +1451,13 @@ function CardPickerModal({ open, onClose, onSelectBoth, initialCards = [null, nu
                       {SUIT_SYMBOL[p[1]] ? <span style={{ fontSize: Math.round(pvFont * 0.6) }}>{SUIT_SYMBOL[p[1]]}</span> : null}
                     </span>
                   ) : (
-                    <span style={{ color: "#1a2d45", fontSize: Math.round(pvFont * 0.66) }}>?</span>
+                    <span style={{ color: isActive ? "#fbbf24" : "#1a2d45", fontSize: Math.round(pvFont * 0.66) }}>?</span>
                   )}
                 </button>
+                {/* 현재 편집 슬롯 인디케이터 */}
+                <span style={{ fontSize: 10, lineHeight: "11px", height: 11, color: "#fbbf24", fontWeight: 900 }}>
+                  {isActive ? "▲" : ""}
+                </span>
               </div>
             );
           })}
@@ -1613,6 +1629,11 @@ function HandHistoryCard({ hand }) {
           <span style={{ color: "#10b981", fontSize: 13, fontWeight: 900, fontFamily: MONO }}>
             HAND #{hand.number}
           </span>
+          {GAME_TYPES[hand.gameType] && (
+            <span style={{ color: "#64748b", fontSize: 10, fontWeight: 700, fontFamily: MONO }}>
+              {GAME_TYPES[hand.gameType].label}
+            </span>
+          )}
           {hand.winnerName && (
             <span style={{
               background: "#f59e0b22", color: "#f59e0b",
@@ -2000,6 +2021,8 @@ export default function App() {
   const [showPlayers, setShowPlayers] = useState(false);
   const [showWinnerPicker, setShowWinnerPicker] = useState(false);
   const [selectedWinners, setSelectedWinners] = useState([]); // 다중 위너 선택용 seatId 배열
+  const [selectedHi, setSelectedHi] = useState([]); // Hi-Lo: High 팟 승자
+  const [selectedLo, setSelectedLo] = useState([]); // Hi-Lo: Low 팟 승자
   const [cardPickerFor, setCardPickerFor] = useState(null); // { seatId } | { board } | { showdown } | { edit }
   const [equityResult, setEquityResult] = useState(null); // { players,exact,iterations,street } | { error,street }
   const [equityStreet, setEquityStreet] = useState(null);  // 계산 대상 스트리트 키
@@ -2600,15 +2623,23 @@ export default function App() {
       if (showWinnerPicker && currentHand) {
         const lastIdx = streetsOf(currentHand).length - 1;
         const alive = getAlivePlayers(lastIdx);
-        if (key === "escape") { setShowWinnerPicker(false); setSelectedWinners([]); return; }
+        const isHilo = !!GAME_TYPES[currentHand.gameType]?.hilo;
+        if (key === "escape") { setShowWinnerPicker(false); setSelectedWinners([]); setSelectedHi([]); setSelectedLo([]); return; }
         if (key === "enter") {
-          const winnerSeats = alive.filter(s => selectedWinners.includes(s.id));
-          if (winnerSeats.length > 0) {
-            finalizeWinners(winnerSeats);
-            setSelectedWinners([]);
+          if (isHilo) {
+            const hiSeats = alive.filter(s => selectedHi.includes(s.id));
+            const loSeats = alive.filter(s => selectedLo.includes(s.id));
+            if (hiSeats.length > 0 || loSeats.length > 0) finalizeWinnersHilo(hiSeats, loSeats);
+          } else {
+            const winnerSeats = alive.filter(s => selectedWinners.includes(s.id));
+            if (winnerSeats.length > 0) {
+              finalizeWinners(winnerSeats);
+              setSelectedWinners([]);
+            }
           }
           return;
         }
+        if (isHilo) return; // hilo는 숫자 토글 비활성(HI/LO 버튼으로만)
         const idx = parseInt(e.key, 10) - 1;
         if (!isNaN(idx) && alive[idx]) {
           const sid = alive[idx].id;
@@ -2673,7 +2704,7 @@ export default function App() {
 
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [currentHand, currentStreet, cardPickerFor, recapHand, showWinnerPicker, selectedWinners, seats]);
+  }, [currentHand, currentStreet, cardPickerFor, recapHand, showWinnerPicker, selectedWinners, selectedHi, selectedLo, seats]);
 
   // ── 위너 선택 → 핸드 종료 → 포지션 로테이션 ──────────────────────────────
   // 다중 위너 확정 (1명이면 단독, 2명+면 스플릿/찹)
@@ -2695,6 +2726,38 @@ export default function App() {
     setCurrentHand(null);
     setCurrentStreet(0);
     setShowWinnerPicker(false);
+    setRecapHand(finalHand);
+  };
+
+  // Hi-Lo 확정: High 팟 승자 + Low 팟 승자 (같은 1명이면 Scoop)
+  const finalizeWinnersHilo = (hiSeats, loSeats) => {
+    if ((!hiSeats || hiSeats.length === 0) && (!loSeats || loSeats.length === 0)) return;
+    const hiNames = (hiSeats || []).map(s => s.name);
+    const loNames = (loSeats || []).map(s => s.name);
+    const isScoop = hiSeats.length === 1 && loSeats.length === 1 && hiSeats[0].id === loSeats[0].id;
+    let winnerName;
+    if (isScoop) {
+      winnerName = `SCOOP: ${hiNames[0]}`;
+    } else {
+      const hiPart = hiNames.length ? `High: ${hiNames.join(", ")}` : "High: —";
+      const loPart = loNames.length ? `Low: ${loNames.join(", ")}` : "Low: —";
+      winnerName = `${hiPart} / ${loPart}`;
+    }
+    const finalHand = {
+      ...currentHand,
+      winnerName,
+      hiWinners: (hiSeats || []).map(s => s.id),
+      loWinners: (loSeats || []).map(s => s.id),
+      winnerSeatId: null,
+      isSplit: true,
+      isHilo: true,
+    };
+    setHands(prev => [finalHand, ...prev]);
+    setButtonSeatId(b => advanceButton(seats, b));
+    setCurrentHand(null);
+    setCurrentStreet(0);
+    setShowWinnerPicker(false);
+    setSelectedHi([]); setSelectedLo([]);
     setRecapHand(finalHand);
   };
 
@@ -2874,7 +2937,7 @@ export default function App() {
                     fontFamily: MONO,
                     opacity: cardCountLocked && !isSel ? 0.5 : 1,
                   }}
-                >{g.label}<span style={{ fontSize: 9, opacity: .6, marginLeft: 4 }}>{g.cards}</span></button>
+                >{g.label}</button>
               );
             })}
           </div>
@@ -3193,7 +3256,9 @@ export default function App() {
           )}
 
           {/* 위너 선택 */}
-          {showWinnerPicker && currentHand && (
+          {showWinnerPicker && currentHand && (() => {
+            const isHilo = !!GAME_TYPES[currentHand.gameType]?.hilo;
+            return (
             <div style={{
               background: "#050d1a",
               border: "2px solid #f59e0b",
@@ -3203,40 +3268,45 @@ export default function App() {
               <div style={{
                 color: "#f59e0b", fontSize: 13, fontWeight: 900,
                 letterSpacing: 2, marginBottom: 6, textAlign: "center",
-              }}>🏆 WINNER 선택</div>
+              }}>🏆 WINNER 선택{isHilo ? " (Hi-Lo)" : ""}</div>
               <div style={{
                 color: "#7e8ca0", fontSize: 10, marginBottom: 12, textAlign: "center",
-              }}>여러 명 선택 시 SPLIT(찹) 처리</div>
+              }}>{isHilo ? "HIGH / LOW 각각 선택 · 한 명이 둘 다 = SCOOP" : "여러 명 선택 시 SPLIT(찹) 처리"}</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {getAlivePlayers(streetList.length - 1).map(seat => {
                   const isSel = selectedWinners.includes(seat.id);
+                  const selHi = selectedHi.includes(seat.id);
+                  const selLo = selectedLo.includes(seat.id);
+                  const rowOn = isHilo ? (selHi || selLo) : isSel;
                   return (
                     <button
                       key={seat.id}
-                      onClick={() => setSelectedWinners(prev =>
+                      onClick={() => { if (isHilo) return; setSelectedWinners(prev =>
                         prev.includes(seat.id)
                           ? prev.filter(id => id !== seat.id)
                           : [...prev, seat.id]
-                      )}
+                      ); }}
                       style={{
                         padding: "12px 16px",
-                        background: isSel ? "#1a3d2e" : "#0a1628",
-                        border: `2px solid ${isSel ? "#10b981" : "#1a2d45"}`,
+                        background: rowOn ? "#1a3d2e" : "#0a1628",
+                        border: `2px solid ${rowOn ? "#10b981" : "#1a2d45"}`,
                         borderRadius: 10,
                         color: "#e2e8f0",
                         display: "flex", alignItems: "center", justifyContent: "space-between",
-                        cursor: "pointer",
+                        cursor: isHilo ? "default" : "pointer",
                         transition: "all .15s",
                       }}
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <span style={{
-                          width: 20, height: 20, borderRadius: 5,
-                          border: `2px solid ${isSel ? "#10b981" : "#7e8ca0"}`,
-                          background: isSel ? "#10b981" : "transparent",
-                          color: "#000", fontSize: 12, fontWeight: 900,
-                          display: "flex", alignItems: "center", justifyContent: "center",
-                        }}>{isSel ? "✓" : ""}</span>
+                        {!isHilo && (
+                          <span style={{
+                            width: 20, height: 20, borderRadius: 5,
+                            border: `2px solid ${isSel ? "#10b981" : "#7e8ca0"}`,
+                            background: isSel ? "#10b981" : "transparent",
+                            color: "#000", fontSize: 12, fontWeight: 900,
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                          }}>{isSel ? "✓" : ""}</span>
+                        )}
                         <span style={{
                           background: "#0f172a", border: "1px solid #1e293b",
                           fontSize: 10, color: "#10b981", padding: "1px 6px", borderRadius: 4,
@@ -3269,35 +3339,80 @@ export default function App() {
                           );
                         })()}
                       </div>
-                      <span style={{ color: isSel ? "#10b981" : "#374151", fontSize: 16 }}>🏆</span>
+                      {isHilo ? (
+                        <span style={{ display: "flex", gap: 6 }}>
+                          <span
+                            role="button"
+                            onClick={(ev) => { ev.stopPropagation(); setSelectedHi(prev => prev.includes(seat.id) ? prev.filter(id => id !== seat.id) : [...prev, seat.id]); }}
+                            style={{
+                              padding: "5px 11px", borderRadius: 7, fontSize: 12, fontWeight: 900, fontFamily: MONO, cursor: "pointer",
+                              background: selHi ? "#f59e0b" : "#0f172a",
+                              border: `2px solid ${selHi ? "#f59e0b" : "#374151"}`,
+                              color: selHi ? "#000" : "#7e8ca0",
+                            }}>HI</span>
+                          <span
+                            role="button"
+                            onClick={(ev) => { ev.stopPropagation(); setSelectedLo(prev => prev.includes(seat.id) ? prev.filter(id => id !== seat.id) : [...prev, seat.id]); }}
+                            style={{
+                              padding: "5px 11px", borderRadius: 7, fontSize: 12, fontWeight: 900, fontFamily: MONO, cursor: "pointer",
+                              background: selLo ? "#3b82f6" : "#0f172a",
+                              border: `2px solid ${selLo ? "#3b82f6" : "#374151"}`,
+                              color: selLo ? "#000" : "#7e8ca0",
+                            }}>LO</span>
+                        </span>
+                      ) : (
+                        <span style={{ color: isSel ? "#10b981" : "#374151", fontSize: 16 }}>🏆</span>
+                      )}
                     </button>
                   );
                 })}
               </div>
 
               {/* 확정 버튼 */}
-              <button
-                onClick={() => {
-                  const winnerSeats = getAlivePlayers(streetList.length - 1).filter(s => selectedWinners.includes(s.id));
-                  if (winnerSeats.length > 0) {
-                    finalizeWinners(winnerSeats);
-                    setSelectedWinners([]);
-                  }
-                }}
-                disabled={selectedWinners.length === 0}
-                style={{
-                  width: "100%", marginTop: 12, padding: "13px",
-                  background: selectedWinners.length === 0 ? "#070f1c"
-                    : "linear-gradient(135deg, #f59e0b, #b45309)",
-                  border: "none", borderRadius: 10,
-                  color: selectedWinners.length === 0 ? "#1a2d45" : "#000",
-                  fontSize: 13, fontWeight: 900, letterSpacing: 2,
-                  cursor: selectedWinners.length === 0 ? "not-allowed" : "pointer",
-                }}
-              >
-                {selectedWinners.length <= 1 ? "🏆 위너 확정"
-                  : `🏆 SPLIT 확정 (${selectedWinners.length}명)`}
-              </button>
+              {isHilo ? (() => {
+                const hiSeats = getAlivePlayers(streetList.length - 1).filter(s => selectedHi.includes(s.id));
+                const loSeats = getAlivePlayers(streetList.length - 1).filter(s => selectedLo.includes(s.id));
+                const ready = hiSeats.length > 0 || loSeats.length > 0;
+                const isScoop = hiSeats.length === 1 && loSeats.length === 1 && hiSeats[0].id === loSeats[0].id;
+                return (
+                  <button
+                    onClick={() => { if (ready) finalizeWinnersHilo(hiSeats, loSeats); }}
+                    disabled={!ready}
+                    style={{
+                      width: "100%", marginTop: 12, padding: "13px",
+                      background: !ready ? "#070f1c" : "linear-gradient(135deg, #f59e0b, #b45309)",
+                      border: "none", borderRadius: 10,
+                      color: !ready ? "#1a2d45" : "#000",
+                      fontSize: 13, fontWeight: 900, letterSpacing: 2,
+                      cursor: !ready ? "not-allowed" : "pointer",
+                    }}
+                  >{isScoop ? "🏆 SCOOP 확정"
+                    : `🏆 Hi-Lo 확정 (Hi ${hiSeats.length} / Lo ${loSeats.length})`}</button>
+                );
+              })() : (
+                <button
+                  onClick={() => {
+                    const winnerSeats = getAlivePlayers(streetList.length - 1).filter(s => selectedWinners.includes(s.id));
+                    if (winnerSeats.length > 0) {
+                      finalizeWinners(winnerSeats);
+                      setSelectedWinners([]);
+                    }
+                  }}
+                  disabled={selectedWinners.length === 0}
+                  style={{
+                    width: "100%", marginTop: 12, padding: "13px",
+                    background: selectedWinners.length === 0 ? "#070f1c"
+                      : "linear-gradient(135deg, #f59e0b, #b45309)",
+                    border: "none", borderRadius: 10,
+                    color: selectedWinners.length === 0 ? "#1a2d45" : "#000",
+                    fontSize: 13, fontWeight: 900, letterSpacing: 2,
+                    cursor: selectedWinners.length === 0 ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {selectedWinners.length <= 1 ? "🏆 위너 확정"
+                    : `🏆 SPLIT 확정 (${selectedWinners.length}명)`}
+                </button>
+              )}
 
               {(() => {
                 // 실제 액션이 입력된 마지막 스트리트로 되돌리기.
@@ -3318,7 +3433,8 @@ export default function App() {
                 );
               })()}
             </div>
-          )}
+            );
+          })()}
 
           {/* 핸드 진행 */}
           {isHandActive && !showWinnerPicker && (
@@ -3755,6 +3871,12 @@ export default function App() {
                     background: "#020a14", border: "1px solid #0f1f35",
                     borderRadius: 8,
                   }}>
+                    {GAME_TYPES[currentHand.gameType]?.name && (
+                      <div style={{
+                        color: "#10b981", fontSize: 10, fontWeight: 800, letterSpacing: 1,
+                        marginBottom: 6, paddingBottom: 5, borderBottom: "1px solid #0f1f35",
+                      }}>{GAME_TYPES[currentHand.gameType].name}</div>
+                    )}
                     <BoardLine hand={currentHand} size="sm" />
                     {streetList.map((s, idx) => (
                       <StreetLine key={s} hand={currentHand} streetIdx={idx} dupCardSeats={dupCardSeats} size="sm" />
