@@ -305,13 +305,14 @@ function processPreflopEntries(rawEntries, isHeadsUp) {
 
 // 어느 스트리트든 "첫 액션이 폴드"인 항목을 제거. 이미 다른 액션을 한 사람이 나중에 폴드하는 건 유지.
 // 헤즈업은 프리플랍과 마찬가지로 폴드도 전부 표시.
-function filterFirstFolds(rawEntries, isHeadsUp = false) {
+// prevActedSeats: 이전 스트릿들에서 이미 액션한 좌석 집합(스터드 핸드 전체 추적용)
+function filterFirstFolds(rawEntries, isHeadsUp = false, prevActedSeats = null) {
   if (isHeadsUp) return rawEntries;
-  const actedSeats = new Set();
+  const actedSeats = prevActedSeats ? new Set(prevActedSeats) : new Set();
   const out = [];
   for (const e of rawEntries) {
     if (e.action === "fold" && !actedSeats.has(e.seatId)) {
-      // 이 스트리트에서 첫 액션이 폴드 → 숨김
+      // 핸드(또는 이 스트릿)에서 첫 액션이 폴드 → 숨김
     } else {
       actedSeats.add(e.seatId);
       out.push(e);
@@ -368,6 +369,8 @@ function handToText(hand, showEventName = true) {
   const isStudGame = !!GAME_TYPES[hand.gameType]?.stud;
   // 스터드: 핸드 전체에서 처음 등장 1회만 이름 표시 (스트릿 넘어도 유지)
   const studHandSeenSeats = new Set();
+  // 스터드: 핸드 전체에서 비폴드 액션을 한 좌석 추적 (이전 스트릿에서 액션한 사람 폴드 → 표시)
+  const studHandActedSeats = isStudGame ? new Set() : null;
 
   SL.forEach((street, sIdx) => {
     const rawEntries = hand.streets[street] || [];
@@ -379,7 +382,12 @@ function handToText(hand, showEventName = true) {
       entries = r.entries;
       showAllFold = preflopEndedByFold(hand);
     } else {
-      entries = filterFirstFolds(rawEntries, isHeadsUp);
+      entries = filterFirstFolds(rawEntries, isHeadsUp, studHandActedSeats);
+    }
+
+    // 스터드: 이 스트릿의 비폴드 액션을 핸드 집합에 추가 (다음 스트릿 폴드 판단에 사용)
+    if (studHandActedSeats) {
+      rawEntries.forEach(e => { if (e.action !== "fold") studHandActedSeats.add(e.seatId); });
     }
 
     const isDrawStreet = isDrawGame && sIdx >= 1;

@@ -1657,6 +1657,42 @@ check("첫액션폴드 숨김: 스터드 3RD 폴드 숨김", () => {
   if (!/COMPLETE/.test(txt)) throw new Error("3RD COMPLETE 누락:\n" + txt);
 });
 
+check("버그수정: 스터드 이전스트릿 액션자 폴드 → 4TH에서 표시", () => {
+  installGlobals({});
+  const I = loadInternals(src);
+  const hand = {
+    gameType: "stud7", streetList: ["3RD","4TH","5TH","6TH","7TH"],
+    seats: [
+      { id: 0, name: "A", position: "#1" },
+      { id: 1, name: "B", position: "#2" },
+      { id: 2, name: "C", position: "#3" },
+    ],
+    cardCount: 2, studCards: {}, board: [null,null,null,null,null], roundHole: {},
+    streets: {
+      "3RD": [
+        { seatId: 0, playerName: "A", position: "#1", action: "bringin", amountText: "5K" },
+        { seatId: 2, playerName: "C", position: "#3", action: "fold" }, // 첫액션폴드 → 숨김
+        { seatId: 1, playerName: "B", position: "#2", action: "complete", amountText: "15K" },
+        { seatId: 0, playerName: "A", position: "#1", action: "call" },
+      ],
+      "4TH": [
+        { seatId: 0, playerName: "A", position: "#1", action: "check" },
+        { seatId: 1, playerName: "B", position: "#2", action: "bet", amountText: "15K" },
+        { seatId: 0, playerName: "A", position: "#1", action: "fold" }, // A는 3RD에서 액션 → 표시
+      ],
+      "5TH":[],"6TH":[],"7TH":[],
+    },
+    winnerName: "B", winnerSeatId: 1,
+  };
+  const txt = I.handToText(hand);
+  const line3rd = txt.split("\n").find(l => l.startsWith("3rd:")) || "";
+  const line4th = txt.split("\n").find(l => l.startsWith("4th:")) || "";
+  // 3RD: C 첫액션폴드 숨김
+  if (/C.*FOLD/.test(line3rd)) throw new Error("3RD C 첫액션폴드가 숨겨지지 않음:\n" + line3rd);
+  // 4TH: A가 3RD에서 액션했으므로 A의 폴드는 표시
+  if (!/FOLD/.test(line4th)) throw new Error("4TH A 폴드가 숨겨짐(3RD 액션자 폴드는 보여야 함):\n" + line4th);
+});
+
 check("버그수정: computeActionablePlayers — 아직 액션 없는 스트리트에서 TypeError 없음", () => {
   installGlobals({});
   const I = loadInternals(src);
