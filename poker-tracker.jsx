@@ -304,7 +304,9 @@ function processPreflopEntries(rawEntries, isHeadsUp) {
 }
 
 // 어느 스트리트든 "첫 액션이 폴드"인 항목을 제거. 이미 다른 액션을 한 사람이 나중에 폴드하는 건 유지.
-function filterFirstFolds(rawEntries) {
+// 헤즈업은 프리플랍과 마찬가지로 폴드도 전부 표시.
+function filterFirstFolds(rawEntries, isHeadsUp = false) {
+  if (isHeadsUp) return rawEntries;
   const actedSeats = new Set();
   const out = [];
   for (const e of rawEntries) {
@@ -375,7 +377,7 @@ function handToText(hand, showEventName = true) {
       entries = r.entries;
       showAllFold = preflopEndedByFold(hand);
     } else {
-      entries = filterFirstFolds(rawEntries);
+      entries = filterFirstFolds(rawEntries, isHeadsUp);
     }
 
     const isDrawStreet = isDrawGame && sIdx >= 1;
@@ -600,7 +602,7 @@ function computeActionablePlayers(hand, streetIdx) {
       if (a.action === "allin" || a.action === "allincall") allInIds.add(a.seatId);
     });
   }
-  hand.streets[SL[streetIdx]].forEach(a => {
+  (hand.streets[SL[streetIdx]] || []).forEach(a => {
     if (a.action === "fold") foldedIds.add(a.seatId);
     if (a.action === "allin" || a.action === "allincall") allInIds.add(a.seatId);
   });
@@ -1080,7 +1082,7 @@ function StreetLine({ hand, streetIdx, dupCardSeats, size = "sm", showEmpty = fa
     entries = r.entries;
     showAllFold = preflopEndedByFold(hand);
   } else {
-    entries = filterFirstFolds(rawEntries);
+    entries = filterFirstFolds(rawEntries, isHeadsUp);
   }
 
   // 스킵: showEmpty면 빈 스트리트도 라벨만. 아니면 액션 없는 스트리트 생략. (보드는 상단 BoardLine에서)
