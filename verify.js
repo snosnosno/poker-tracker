@@ -1576,10 +1576,11 @@ check("스터드 로그: 3RD 다운카드 2장 + 7TH 다운카드 표시", () =>
   // 7TH: 각 플레이어 7th 다운카드(7c, 9h) 포함
   if (!line7th.includes("7")) throw new Error("7TH 김 다운카드(7c) 누락:\n" + line7th);
   if (!line7th.includes("9")) throw new Error("7TH 이 다운카드(9h) 누락:\n" + line7th);
-  // 4TH 라인: 다운카드 없고 누적 업카드만 (기존 동작 보존)
+  // 4TH 라인: 다운카드도 표시 + 누적 업카드도 표시
   const line4th = lines.find(l => l.startsWith("4th:"));
   if (!line4th) throw new Error("4TH 라인 없음");
   if (!/\[Ks 2d\]/.test(line4th)) throw new Error("4TH 김 누적업카드 이상:\n" + line4th);
+  if (!line4th.includes("Ah") || !line4th.includes("Kd")) throw new Error("4TH 김 다운카드(Ah,Kd) 미표시:\n" + line4th);
 });
 
 check("첫액션폴드 숨김: 플랍/턴 첫 액션 폴드 미표시, 콜 후 폴드는 표시", () => {
