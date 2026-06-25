@@ -725,7 +725,9 @@ check("handToText 홀덤: 보드 미입력 시 ? ? ? 없이 라벨+액션 한 �
   const txt = I.handToText(hand);
   if (txt.includes("?")) throw new Error("보드 미입력인데 ? 표시됨:\n" + txt);
   if (!/Flop: Q9 BET \/ QQ CALL/.test(txt)) throw new Error("Flop 라벨+액션 한 줄 아님:\n" + txt);
-  if (!/Turn: Q9 BET \/ QQ FOLD/.test(txt)) throw new Error("Turn 라벨+액션 한 줄 아님:\n" + txt);
+  // Turn: ㅁ의 첫 액션이 FOLD → 첫액션폴드 필터로 숨김 → BET만 남음
+  if (!/Turn: Q9 BET/.test(txt)) throw new Error("Turn BET 누락:\n" + txt);
+  if (/Turn:.*FOLD/.test(txt)) throw new Error("Turn: 첫액션폴드가 숨겨지지 않음:\n" + txt);
 });
 
 check("히스토리 카드: 저장된 드로우 핸드 펼치면 D라벨/PAT + Winner 핸드 표시", () => {
@@ -1575,6 +1577,80 @@ check("스터드 로그: 3RD 다운카드 2장 + 7TH 다운카드 표시", () =>
   const line4th = lines.find(l => l.startsWith("4th:"));
   if (!line4th) throw new Error("4TH 라인 없음");
   if (!/\[Ks 2d\]/.test(line4th)) throw new Error("4TH 김 누적업카드 이상:\n" + line4th);
+});
+
+check("첫액션폴드 숨김: 플랍/턴 첫 액션 폴드 미표시, 콜 후 폴드는 표시", () => {
+  installGlobals({});
+  const I = loadInternals(src);
+  const hand = {
+    gameType: "holdem", streetList: ["PREFLOP","FLOP","TURN","RIVER"],
+    seats: [
+      { id: 0, name: "A", position: "UTG" },
+      { id: 1, name: "B", position: "D" },
+      { id: 2, name: "C", position: "BB" },
+    ],
+    cardCount: 2,
+    holeCards: { 0: ["Ax","Kx"], 1: ["Qx","Jx"], 2: ["Tx","9x"] },
+    board: [null,null,null,null,null], roundHole: {},
+    streets: {
+      PREFLOP: [
+        { seatId: 0, playerName: "A", position: "UTG", action: "open" },
+        { seatId: 1, playerName: "B", position: "D",   action: "call" },
+        { seatId: 2, playerName: "C", position: "BB",  action: "call" },
+      ],
+      // 플랍: C가 첫 액션 폴드 → 숨김 / A 벳 / B 콜
+      FLOP: [
+        { seatId: 2, playerName: "C", position: "BB",  action: "fold" },
+        { seatId: 0, playerName: "A", position: "UTG", action: "bet" },
+        { seatId: 1, playerName: "B", position: "D",   action: "call" },
+      ],
+      // 턴: A 체크 → B 벳 → A 폴드(두 번째 액션) → 표시됨
+      TURN: [
+        { seatId: 0, playerName: "A", position: "UTG", action: "check" },
+        { seatId: 1, playerName: "B", position: "D",   action: "bet" },
+        { seatId: 0, playerName: "A", position: "UTG", action: "fold" },
+      ],
+      RIVER: [],
+    },
+    winnerName: "B", winnerSeatId: 1,
+  };
+  const txt = I.handToText(hand);
+  // 플랍: C의 첫액션폴드 숨김 → A BET / B CALL 만
+  if (/Flop:.*C.*FOLD/.test(txt)) throw new Error("플랍 C 첫액션폴드가 숨겨지지 않음:\n" + txt);
+  if (!/Flop:.*BET/.test(txt)) throw new Error("플랍 BET 누락:\n" + txt);
+  if (!/Flop:.*CALL/.test(txt)) throw new Error("플랍 CALL 누락:\n" + txt);
+  // 턴: A의 체크 후 폴드는 두 번째 액션 → 표시됨
+  if (!/Turn:.*CHECK/.test(txt)) throw new Error("턴 CHECK 누락:\n" + txt);
+  if (!/Turn:.*FOLD/.test(txt)) throw new Error("턴 A 두번째폴드 누락(보여야 함):\n" + txt);
+});
+
+check("첫액션폴드 숨김: 스터드 3RD 폴드 숨김", () => {
+  installGlobals({});
+  const I = loadInternals(src);
+  const hand = {
+    gameType: "stud7", streetList: ["3RD","4TH","5TH","6TH","7TH"],
+    seats: [
+      { id: 0, name: "A", position: "#1" },
+      { id: 1, name: "B", position: "#2" },
+      { id: 2, name: "C", position: "#3" },
+    ],
+    cardCount: 2, studCards: {}, board: [null,null,null,null,null], roundHole: {},
+    streets: {
+      "3RD": [
+        { seatId: 0, playerName: "A", position: "#1", action: "bringin", amountText: "5K" },
+        { seatId: 1, playerName: "B", position: "#2", action: "fold" },   // 첫액션폴드 → 숨김
+        { seatId: 2, playerName: "C", position: "#3", action: "complete", amountText: "15K" },
+        { seatId: 0, playerName: "A", position: "#1", action: "call" },
+      ],
+      "4TH":[],"5TH":[],"6TH":[],"7TH":[],
+    },
+    winnerName: "C", winnerSeatId: 2,
+  };
+  const txt = I.handToText(hand);
+  if (/B.*FOLD/.test(txt.split("\n").find(l => l.startsWith("3rd:"))||""))
+    throw new Error("3RD B 첫액션폴드가 숨겨지지 않음:\n" + txt);
+  if (!/BRING-IN/.test(txt)) throw new Error("3RD BRING-IN 누락:\n" + txt);
+  if (!/COMPLETE/.test(txt)) throw new Error("3RD COMPLETE 누락:\n" + txt);
 });
 
 let fail = 0;

@@ -303,6 +303,21 @@ function processPreflopEntries(rawEntries, isHeadsUp) {
   return { entries, showAllFold };
 }
 
+// 어느 스트리트든 "첫 액션이 폴드"인 항목을 제거. 이미 다른 액션을 한 사람이 나중에 폴드하는 건 유지.
+function filterFirstFolds(rawEntries) {
+  const actedSeats = new Set();
+  const out = [];
+  for (const e of rawEntries) {
+    if (e.action === "fold" && !actedSeats.has(e.seatId)) {
+      // 이 스트리트에서 첫 액션이 폴드 → 숨김
+    } else {
+      actedSeats.add(e.seatId);
+      out.push(e);
+    }
+  }
+  return out;
+}
+
 // 프리플랍에서 (오픈폴드만으로) 전원 폴드되어 끝났는지.
 // 조건: 확정 + 플랍 이상 없음 + 폴드 존재 + 생존자 정확히 1명
 //       + 모든 폴드가 "첫 액션 폴드"(=숨겨지는 오픈폴드)일 것.
@@ -360,7 +375,7 @@ function handToText(hand, showEventName = true) {
       entries = r.entries;
       showAllFold = preflopEndedByFold(hand);
     } else {
-      entries = rawEntries;
+      entries = filterFirstFolds(rawEntries);
     }
 
     const isDrawStreet = isDrawGame && sIdx >= 1;
@@ -1065,7 +1080,7 @@ function StreetLine({ hand, streetIdx, dupCardSeats, size = "sm", showEmpty = fa
     entries = r.entries;
     showAllFold = preflopEndedByFold(hand);
   } else {
-    entries = rawEntries;
+    entries = filterFirstFolds(rawEntries);
   }
 
   // 스킵: showEmpty면 빈 스트리트도 라벨만. 아니면 액션 없는 스트리트 생략. (보드는 상단 BoardLine에서)
