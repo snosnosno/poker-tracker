@@ -411,8 +411,20 @@ function handToText(hand, showEventName = true) {
           }
           prefix = `${e.playerName} ${downPrefix}${upStr.trimEnd()}${downSuffix} `.replace(/  +/g, " ");
         } else {
-          // 같은 스트리트 두 번째+ 액션: 이름 없이 업카드만
-          prefix = upStr.trimEnd() ? `${upStr.trimEnd()} ` : "";
+          // 같은 스트리트 두 번째+ 액션: 이름 없이, 다운카드+업카드 표시
+          let downPrefix2 = "";
+          let downSuffix2 = "";
+          if (street === "3RD") {
+            const d0 = studCardAt(hand, e.seatId, 0);
+            const d1 = studCardAt(hand, e.seatId, 1);
+            const downs = [d0, d1].filter(Boolean).map(cardLabelL).join(" ");
+            if (downs) downPrefix2 = downs + " ";
+          } else if (street === "7TH") {
+            const d6 = studCardAt(hand, e.seatId, 6);
+            if (d6) downSuffix2 = " " + cardLabelL(d6);
+          }
+          const combined = `${downPrefix2}${upStr.trimEnd()}${downSuffix2}`.trim();
+          prefix = combined ? `${combined} ` : "";
         }
       } else if (isPreflop && isFirstForPlayer) {
         prefix = `${posLabel(e.position)} ${e.playerName} `;
@@ -1280,6 +1292,7 @@ function StudCardGrid({ hand, seatId, currentStreetIdx, onPick, size = "md" }) {
         const card = studCardAt(hand, seatId, slot);
         const sIdx = SL.indexOf(meta.street);
         const isFuture = sIdx > currentStreetIdx;
+        const isCurrent = sIdx === currentStreetIdx;
         const isUp = meta.face === "up";
         return (
           <button key={slot}
@@ -1290,17 +1303,20 @@ function StudCardGrid({ hand, seatId, currentStreetIdx, onPick, size = "md" }) {
               background: "transparent", border: "none", padding: 0,
               cursor: "pointer", opacity: isFuture ? 0.42 : 1,
             }}>
-            <span style={{ fontSize: 7, fontWeight: 800, letterSpacing: 0.3, color: isUp ? "#38bdf8" : "#64748b" }}>
+            <span style={{ fontSize: 7, fontWeight: 800, letterSpacing: 0.3,
+              color: isCurrent ? "#fbbf24" : isUp ? "#38bdf8" : "#64748b" }}>
               {STREET_SHORT[meta.street]}{isUp ? "▲" : "▽"}
             </span>
             <div style={{
               width: sw, height: sh, borderRadius: 4,
               display: "flex", alignItems: "center", justifyContent: "center",
               background: card ? (isUp ? "#fafafa" : "#0a1c2c") : "#020a14",
-              border: card
-                ? (isUp ? "1px solid #2a4a6e" : "1px solid #1e3a52")
-                : `1.5px dashed ${isUp ? "#38bdf8" : "#475569"}`,
-              boxShadow: !card && !isFuture && isUp ? "0 0 6px rgba(56,189,248,.25)" : "none",
+              border: isCurrent
+                ? `2px solid #fbbf24`
+                : card
+                  ? (isUp ? "1px solid #2a4a6e" : "1px solid #1e3a52")
+                  : `1.5px dashed ${isUp ? "#38bdf8" : "#475569"}`,
+              boxShadow: isCurrent ? "0 0 8px rgba(251,191,36,.5)" : (!card && !isFuture && isUp ? "0 0 6px rgba(56,189,248,.25)" : "none"),
             }}>
               {card
                 ? <CardChip card={card} size="sm" />
