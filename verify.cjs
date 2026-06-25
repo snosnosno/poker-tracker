@@ -572,8 +572,8 @@ check("화면 인라인 로그: 드로우 첫액션에 교환수+핸드 표시 (
   advanceStreetHU(root, true, 5); // → DRAW1 (베팅 페이즈 바로 시작, 드로우 페이즈 없음)
   // 드로우 페이즈 패널이 없어야 함
   if (nodeText(root).includes("· 교환")) throw new Error("드로우 페이즈 패널이 아직 있음");
-  // NEXT TO ACT 베팅 패널이 바로 떠야
-  if (!nodeText(root).includes("NEXT TO ACT")) throw new Error("DRAW1에서 베팅 패널 바로 안 뜸");
+  // 베팅 패널(CHECK 또는 BET 액션 버튼)이 바로 떠야
+  if (!nodeText(root).includes("CHECK") && !nodeText(root).includes("BET")) throw new Error("DRAW1에서 베팅 패널 바로 안 뜸");
   r.unmount();
 });
 

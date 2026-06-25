@@ -3628,11 +3628,6 @@ export default function PokerTracker() {
                       display: "flex", alignItems: "center", gap: 10,
                       marginBottom: 12, flexWrap: "wrap",
                     }}>
-                      <span style={{
-                        fontSize: 9, color: "#10b981",
-                        border: "1px solid #10b981", padding: "2px 8px",
-                        borderRadius: 4, letterSpacing: 1.5, fontWeight: 700,
-                      }}>NEXT TO ACT</span>
                       {currentHand.dead?.button && (
                         <span style={{
                           fontSize: 9, color: "#eab308",
