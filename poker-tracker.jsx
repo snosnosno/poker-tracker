@@ -377,8 +377,23 @@ function handToText(hand, showEventName = true) {
 
       let prefix = "";
       if (isStudGame) {
-        // 스터드: 이름 [업카드] (자리번호 생략)
-        prefix = `${e.playerName} ${upStr}`;
+        // 스터드: 이름 [누적업카드]
+        // 3RD 첫 등장: 다운카드 2장(slot 0,1)을 앞에 표시 → "이름 Ax Kx [업]"
+        // 7TH 첫 등장: 7th 다운카드(slot 6)를 뒤에 표시 → "이름 [업카드누적] 7c"
+        let downPrefix = "";
+        let downSuffix = "";
+        if (isFirstForPlayer) {
+          if (street === "3RD") {
+            const d0 = studCardAt(hand, e.seatId, 0);
+            const d1 = studCardAt(hand, e.seatId, 1);
+            const downs = [d0, d1].filter(Boolean).map(cardLabelL).join(" ");
+            if (downs) downPrefix = downs + " ";
+          } else if (street === "7TH") {
+            const d6 = studCardAt(hand, e.seatId, 6);
+            if (d6) downSuffix = " " + cardLabelL(d6);
+          }
+        }
+        prefix = `${e.playerName} ${downPrefix}${upStr.trimEnd()}${downSuffix} `.replace(/  +/g, " ");
       } else if (isPreflop && isFirstForPlayer) {
         prefix = `${posLabel(e.position)} ${e.playerName} `;
         prefix += handText ? `${handText} ` : "(?) ";

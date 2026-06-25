@@ -1527,6 +1527,56 @@ check("이벤트명 토글: 저장값(pt_showevent=false)이면 마운트 시 OF
 });
 
 // ── 결과 출력 ────────────────────────────────────────────────────
+check("스터드 로그: 3RD 다운카드 2장 + 7TH 다운카드 표시", () => {
+  installGlobals({});
+  const I = loadInternals(src);
+  const h = {
+    gameType: "stud7", streetList: ["3RD","4TH","5TH","6TH","7TH"],
+    seats: [{ id: 0, name: "김", position: "#1" }, { id: 1, name: "이", position: "#2" }],
+    cardCount: 2,
+    // slot 0,1=3rd다운  2=3rd업  3=4th업  6=7th다운
+    studCards: {
+      0: ["Ah", "Kd", "Ks", "2d", null, null, "7c"],
+      1: ["Qh", "Jd", "As", "Qs", null, null, "9h"],
+    },
+    board: [null,null,null,null,null], roundHole: {},
+    streets: {
+      "3RD": [
+        { seatId: 1, playerName: "이", position: "#2", action: "bringin", amountText: "5K" },
+        { seatId: 0, playerName: "김", position: "#1", action: "complete", amountText: "15K" },
+        { seatId: 1, playerName: "이", position: "#2", action: "call" },
+      ],
+      "4TH": [
+        { seatId: 0, playerName: "김", position: "#1", action: "check" },
+        { seatId: 1, playerName: "이", position: "#2", action: "bet", amountText: "15K" },
+      ],
+      "7TH": [
+        { seatId: 0, playerName: "김", position: "#1", action: "check" },
+        { seatId: 1, playerName: "이", position: "#2", action: "bet", amountText: "30K" },
+      ],
+      "5TH": [], "6TH": [],
+    },
+    winnerName: "김", winnerSeatId: 0,
+  };
+  const txt = I.handToText(h, true);
+  const lines = txt.split("\n");
+  const line3rd = lines.find(l => l.startsWith("3rd:"));
+  const line7th = lines.find(l => l.startsWith("7th:"));
+  if (!line3rd) throw new Error("3RD 라인 없음:\n" + txt);
+  if (!line7th) throw new Error("7TH 라인 없음:\n" + txt);
+  // 3RD: 이의 다운카드(Qh, Jd) + 업카드 [As] 포함
+  if (!line3rd.includes("Q") || !line3rd.includes("J")) throw new Error("3RD 이 다운카드 누락:\n" + line3rd);
+  // 3RD: 김의 다운카드(Ah, Kd) + 업카드 [Ks] 포함
+  if (!line3rd.includes("A") || !line3rd.includes("K")) throw new Error("3RD 김 다운카드 누락:\n" + line3rd);
+  // 7TH: 각 플레이어 7th 다운카드(7c, 9h) 포함
+  if (!line7th.includes("7")) throw new Error("7TH 김 다운카드(7c) 누락:\n" + line7th);
+  if (!line7th.includes("9")) throw new Error("7TH 이 다운카드(9h) 누락:\n" + line7th);
+  // 4TH 라인: 다운카드 없고 누적 업카드만 (기존 동작 보존)
+  const line4th = lines.find(l => l.startsWith("4th:"));
+  if (!line4th) throw new Error("4TH 라인 없음");
+  if (!/\[Ks 2d\]/.test(line4th)) throw new Error("4TH 김 누적업카드 이상:\n" + line4th);
+});
+
 let fail = 0;
 for (const [s, n, m] of results) {
   if (s === "FAIL") fail++;
