@@ -70,7 +70,7 @@ function loadInternals(source) {
     presets: [["@babel/preset-env", { targets: { node: "current" }, modules: "commonjs" }], "@babel/preset-react"],
     filename: "poker-tracker.jsx",
   }).code;
-  const body = out + "\nreturn { handToText, cardsToText, streetsOf, GAME_TYPES, CardPickerModal, processPreflopEntries, streetIsDraw, handAtStreet, computeSortedActionable, computeNextToAct, drawCount, drawInfoText, parseCard, cardIsSuited, score5, scoreBest, computeEquity, getActionLabel, studAllCards, studUpCards, studCardAt };\n";
+  const body = out + "\nreturn { handToText, cardsToText, streetsOf, GAME_TYPES, CardPickerModal, processPreflopEntries, streetIsDraw, handAtStreet, computeSortedActionable, computeNextToAct, drawCount, drawInfoText, parseCard, cardIsSuited, score5, scoreBest, computeEquity, getActionLabel, studAllCards, studUpCards, studCardAt, StreetLine, studThirdEndedByFold, filterFirstFolds };\n";
   const { useState, useEffect, useCallback } = React;
   const factory = new Function("React", "useState", "useEffect", "useCallback", body);
   return factory(React, useState, useEffect, useCallback);
@@ -1749,6 +1749,128 @@ check("버그수정: 헤즈업 플랍 첫액션폴드 표시(헤즈업 예외)",
   const flopLine = txt.split("\n").find(l => /^Flop:/i.test(l)) || "";
   if (!/FOLD/.test(flopLine))
     throw new Error("헤즈업 플랍 첫액션폴드가 숨겨짐 (표시되어야 함):\n" + txt);
+});
+
+check("스터드 ALL-FOLD: studThirdEndedByFold — 브링인 후 전원폴드 → true", () => {
+  installGlobals({});
+  const I = loadInternals(src);
+  const hand = {
+    gameType: "stud7",
+    streetList: ["3RD","4TH","5TH","6TH","7TH"],
+    seats: [
+      { id: 0, name: "A" }, { id: 1, name: "B" }, { id: 2, name: "C" },
+    ],
+    studCards: {},
+    streets: {
+      "3RD": [
+        { seatId: 0, playerName: "A", action: "bring-in", amountText: "2K" },
+        { seatId: 1, playerName: "B", action: "fold" },
+        { seatId: 2, playerName: "C", action: "fold" },
+      ],
+      "4TH":[],"5TH":[],"6TH":[],"7TH":[],
+    },
+    winnerName: "A", winnerSeatId: 0,
+  };
+  if (!I.studThirdEndedByFold(hand)) throw new Error("브링인 후 전원폴드인데 false 반환");
+});
+
+check("스터드 ALL-FOLD: studThirdEndedByFold — 3RD에서 콜러 있으면 false", () => {
+  installGlobals({});
+  const I = loadInternals(src);
+  const hand = {
+    gameType: "stud7",
+    streetList: ["3RD","4TH","5TH","6TH","7TH"],
+    seats: [{ id: 0, name: "A" }, { id: 1, name: "B" }, { id: 2, name: "C" }],
+    studCards: {},
+    streets: {
+      "3RD": [
+        { seatId: 0, playerName: "A", action: "bring-in", amountText: "2K" },
+        { seatId: 1, playerName: "B", action: "call", amountText: "2K" },
+        { seatId: 1, playerName: "B", action: "fold" },  // B가 콜 후 폴드 → 보이는 폴드 → ALL-FOLD 아님
+        { seatId: 2, playerName: "C", action: "fold" },
+      ],
+      "4TH":[],"5TH":[],"6TH":[],"7TH":[],
+    },
+    winnerName: "A", winnerSeatId: 0,
+  };
+  if (I.studThirdEndedByFold(hand)) throw new Error("보이는 폴드가 있는데 true 반환");
+});
+
+check("버그1 수정: StreetLine 스터드 4TH — 3RD 액션자 폴드 화면에 표시", () => {
+  installGlobals({});
+  const I = loadInternals(src);
+  const hand = {
+    gameType: "stud7",
+    streetList: ["3RD","4TH","5TH","6TH","7TH"],
+    seats: [
+      { id: 0, name: "A" }, { id: 1, name: "B" }, { id: 2, name: "C" },
+    ],
+    studCards: {},
+    streets: {
+      "3RD": [
+        { seatId: 2, playerName: "C", action: "bring-in", amountText: "2K" },
+        { seatId: 0, playerName: "A", action: "call", amountText: "2K" },
+        { seatId: 1, playerName: "B", action: "fold" },  // 첫폴드 → 숨김
+      ],
+      "4TH": [
+        { seatId: 2, playerName: "C", action: "bet", amountText: "15K" },
+        { seatId: 0, playerName: "A", action: "fold" },  // 3RD에서 call → 표시해야
+      ],
+      "5TH":[],"6TH":[],"7TH":[],
+    },
+    winnerName: "C", winnerSeatId: 2,
+  };
+  // 4TH를 렌더해서 A의 FOLD가 나타나는지 확인
+  let r;
+  act(() => {
+    r = TestRenderer.create(React.createElement(I.StreetLine, {
+      hand, streetIdx: 1, // 4TH
+    }));
+  });
+  const txt = nodeText(r.root);
+  if (!/fold/i.test(txt)) throw new Error("4TH에서 A의 폴드가 화면에 표시되지 않음: " + txt);
+  r.unmount();
+});
+
+check("버그2 수정: StreetLine 스터드 4TH — 3RD에 나온 플레이어 이름 생략", () => {
+  installGlobals({});
+  const I = loadInternals(src);
+  const hand = {
+    gameType: "stud7",
+    streetList: ["3RD","4TH","5TH","6TH","7TH"],
+    seats: [
+      { id: 0, name: "Alice" }, { id: 1, name: "Bob" },
+    ],
+    studCards: {},
+    streets: {
+      "3RD": [
+        { seatId: 0, playerName: "Alice", action: "bring-in", amountText: "2K" },
+        { seatId: 1, playerName: "Bob", action: "call", amountText: "2K" },
+      ],
+      "4TH": [
+        { seatId: 0, playerName: "Alice", action: "check" },
+        { seatId: 1, playerName: "Bob", action: "bet", amountText: "15K" },
+      ],
+      "5TH":[],"6TH":[],"7TH":[],
+    },
+  };
+  // 3RD 렌더: 이름 표시돼야
+  let r3;
+  act(() => {
+    r3 = TestRenderer.create(React.createElement(I.StreetLine, { hand, streetIdx: 0 }));
+  });
+  const txt3 = nodeText(r3.root);
+  r3.unmount();
+  if (!/Alice/.test(txt3)) throw new Error("3RD에서 Alice 이름이 표시되지 않음: " + txt3);
+
+  // 4TH 렌더: 이름 생략돼야 (이미 3RD에서 나옴)
+  let r4;
+  act(() => {
+    r4 = TestRenderer.create(React.createElement(I.StreetLine, { hand, streetIdx: 1 }));
+  });
+  const txt4 = nodeText(r4.root);
+  r4.unmount();
+  if (/Alice|Bob/.test(txt4)) throw new Error("4TH에서 이름이 다시 표시됨(생략 기대): " + txt4);
 });
 
 let fail = 0;

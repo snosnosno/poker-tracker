@@ -326,6 +326,38 @@ function filterFirstFolds(rawEntries, isHeadsUp = false, prevActedSeats = null) 
 //       + 모든 폴드가 "첫 액션 폴드"(=숨겨지는 오픈폴드)일 것.
 // 이미 액션한 사람이 폴드한 경우(콜/오픈 후 폴드 = 로그에 보임)는 ALL-FOLD 생략.
 // 올인-콜 쇼다운(생존 2명+)·헤즈업도 제외.
+// 스터드: 브링인 후 전원 폴드(오픈폴드만)로 끝났는지.
+// 조건: 확정 + 4TH 이상 액션 없음 + 3RD에 폴드 존재 + 생존자 1명
+//       + 보이는 폴드 없음(이미 액션한 사람의 폴드 → ALL-FOLD 생략). 헤즈업 제외.
+function studThirdEndedByFold(hand) {
+  if (!hand) return false;
+  if (!GAME_TYPES[hand.gameType]?.stud) return false;
+  const isHeadsUp = (hand.seats?.length || 0) === 2;
+  if (isHeadsUp) return false;
+  const finalized = !!(hand.winnerSeatId || hand.winnerName || hand.winner);
+  if (!finalized) return false;
+  const s = hand.streets || {};
+  const SL = streetsOf(hand);
+  for (let i = 1; i < SL.length; i++) {
+    if ((s[SL[i]] || []).length > 0) return false;
+  }
+  const third = s["3RD"] || [];
+  const foldedIds = new Set(third.filter(e => e.action === "fold").map(e => e.seatId));
+  if (foldedIds.size === 0) return false;
+  const acted = new Set();
+  let hasVisibleFold = false;
+  for (const e of third) {
+    if (e.action === "fold") {
+      if (acted.has(e.seatId)) hasVisibleFold = true;
+    } else {
+      acted.add(e.seatId);
+    }
+  }
+  if (hasVisibleFold) return false;
+  const alive = (hand.seats || []).filter(sx => !foldedIds.has(sx.id));
+  return alive.length === 1;
+}
+
 function preflopEndedByFold(hand) {
   if (!hand) return false;
   const isHeadsUp = (hand.seats?.length || 0) === 2;
@@ -1051,9 +1083,9 @@ function ActionEntry({ hand, entries, i, isPreflop, isFirstForPlayer, dupCardSea
 
   let lead;
   if (isStudGame) {
-    // 스터드: 이름 + [업카드누적] (자리번호 생략)
+    // 스터드: 첫 등장만 이름 표시, 이후 스트릿에선 생략
     lead = (<>
-      {nameEl(false)}{" "}{upEl}{upText && " "}
+      {isFirstForPlayer && <>{nameEl(false)}{" "}</>}{upEl}{upText && " "}
     </>);
   } else if (isPreflop && isFirstForPlayer) {
     lead = (<>
@@ -1098,26 +1130,49 @@ function ActionEntry({ hand, entries, i, isPreflop, isFirstForPlayer, dupCardSea
 // 한 스트리트 한 줄 렌더 (3곳 공용: 라이브 로그 sm / 히스토리·리캡 md).
 // 라벨 + (비드로우 보드) + ActionEntry들. 도달 안 한 스트리트는 null.
 function StreetLine({ hand, streetIdx, dupCardSeats, size = "sm", showEmpty = false }) {
-  const street = streetsOf(hand)[streetIdx];
+  const SL = streetsOf(hand);
+  const street = SL[streetIdx];
   const rawEntries = hand.streets?.[street] || [];
   const isPreflop = streetIdx === 0;
   const isDrawStreet = streetIsDraw(hand, streetIdx);
   const isHeadsUp = (hand.seats?.length || 0) === 2;
+  const isStudGame = !!GAME_TYPES[hand.gameType]?.stud;
+
+  // Bug 1 fix: 스터드는 이전 스트릿에서 비폴드 액션한 좌석을 추적해 filterFirstFolds에 전달
+  const studPrevActedSeats = isStudGame ? (() => {
+    const s = new Set();
+    for (let i = 0; i < streetIdx; i++) {
+      (hand.streets?.[SL[i]] || []).forEach(e => { if (e.action !== "fold") s.add(e.seatId); });
+    }
+    return s;
+  })() : null;
 
   let entries, showAllFold = false;
   if (isPreflop) {
     const r = processPreflopEntries(rawEntries, isHeadsUp);
     entries = r.entries;
-    showAllFold = preflopEndedByFold(hand);
+    showAllFold = isStudGame ? studThirdEndedByFold(hand) : preflopEndedByFold(hand);
   } else {
-    entries = filterFirstFolds(rawEntries, isHeadsUp);
+    entries = filterFirstFolds(rawEntries, isHeadsUp, studPrevActedSeats);
+    if (isStudGame && streetIdx === 0) showAllFold = studThirdEndedByFold(hand);
   }
 
   // 스킵: showEmpty면 빈 스트리트도 라벨만. 아니면 액션 없는 스트리트 생략. (보드는 상단 BoardLine에서)
-  if (!showEmpty && entries.length === 0) return null;
+  if (!showEmpty && entries.length === 0 && !showAllFold) return null;
 
   const dup = dupCardSeats || computeDupCardSeats(hand);
-  const seen = new Set();
+
+  // Bug 2 fix: 스터드는 핸드 전체에서 이미 나온 좌석을 seen에 선 반영
+  const seen = (() => {
+    const s = new Set();
+    if (isStudGame) {
+      for (let i = 0; i < streetIdx; i++) {
+        (hand.streets?.[SL[i]] || []).forEach(e => s.add(e.seatId));
+      }
+    }
+    return s;
+  })();
+
   const items = entries.map((e, i) => {
     const first = !seen.has(e.seatId);
     seen.add(e.seatId);
