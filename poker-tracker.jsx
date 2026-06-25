@@ -366,6 +366,8 @@ function handToText(hand, showEventName = true) {
   const SL = streetsOf(hand);
   const isDrawGame = !!GAME_TYPES[hand.gameType]?.draw;
   const isStudGame = !!GAME_TYPES[hand.gameType]?.stud;
+  // 스터드: 핸드 전체에서 처음 등장 1회만 이름 표시 (스트릿 넘어도 유지)
+  const studHandSeenSeats = new Set();
 
   SL.forEach((street, sIdx) => {
     const rawEntries = hand.streets[street] || [];
@@ -389,8 +391,9 @@ function handToText(hand, showEventName = true) {
       const upCards = isStudGame ? studUpCards(hand, e.seatId, sIdx) : [];
       const upStr = upCards.length ? `[${upCards.map(cardLabelL).join(" ")}] ` : "";
       const label = getActionLabel(entries, i);
-      const isFirstForPlayer = !seenSeats.has(e.seatId);
+      const isFirstForPlayer = isStudGame ? !studHandSeenSeats.has(e.seatId) : !seenSeats.has(e.seatId);
       seenSeats.add(e.seatId);
+      if (isStudGame) studHandSeenSeats.add(e.seatId);
 
       let prefix = "";
       if (isStudGame) {
