@@ -156,7 +156,7 @@ function studUpCards(hand, seatId, upToStreetIdx) {
     const sIdx = SL.indexOf(st);
     if (sIdx >= 0 && sIdx <= upToStreetIdx) {
       const c = studCardAt(hand, seatId, slot);
-      if (c) out.push([sIdx, c]);
+      if (c && c !== CARD_UNKNOWN) out.push([sIdx, c]);
     }
   }
   return out.sort((a, b) => a[0] - b[0]).map(x => x[1]);
@@ -394,36 +394,22 @@ function handToText(hand, showEventName = true) {
 
       let prefix = "";
       if (isStudGame) {
-        // 스터드: 첫 등장=이름+다운카드+업카드, 두 번째+ 액션=업카드만(이름 생략)
-        // 3RD 첫 등장: 다운카드 2장(slot 0,1)을 앞에 표시 → "이름 Ax Kx [업]"
-        // 7TH 첫 등장: 7th 다운카드(slot 6)를 뒤에 표시 → "이름 [업카드누적] 7c"
+        // 스터드: 모든 스트릿에서 3rd 다운카드 항상 표시, 이름은 첫 등장만
+        // 7TH에서는 추가로 7th 다운카드(slot 6)를 뒤에 표시
+        const sd0 = studCardAt(hand, e.seatId, 0);
+        const sd1 = studCardAt(hand, e.seatId, 1);
+        const downStr = [sd0, sd1].filter(c => c && c !== CARD_UNKNOWN).map(cardLabelL).join(" ");
+        const studDownPrefix = downStr ? downStr + " " : "";
+        let studDownSuffix = "";
+        if (street === "7TH") {
+          const d6 = studCardAt(hand, e.seatId, 6);
+          if (d6 && d6 !== CARD_UNKNOWN) studDownSuffix = " " + cardLabelL(d6);
+        }
         if (isFirstForPlayer) {
-          let downPrefix = "";
-          let downSuffix = "";
-          if (street === "3RD") {
-            const d0 = studCardAt(hand, e.seatId, 0);
-            const d1 = studCardAt(hand, e.seatId, 1);
-            const downs = [d0, d1].filter(Boolean).map(cardLabelL).join(" ");
-            if (downs) downPrefix = downs + " ";
-          } else if (street === "7TH") {
-            const d6 = studCardAt(hand, e.seatId, 6);
-            if (d6) downSuffix = " " + cardLabelL(d6);
-          }
-          prefix = `${e.playerName} ${downPrefix}${upStr.trimEnd()}${downSuffix} `.replace(/  +/g, " ");
+          prefix = `${e.playerName} ${studDownPrefix}${upStr.trimEnd()}${studDownSuffix} `.replace(/  +/g, " ");
         } else {
           // 같은 스트리트 두 번째+ 액션: 이름 없이, 다운카드+업카드 표시
-          let downPrefix2 = "";
-          let downSuffix2 = "";
-          if (street === "3RD") {
-            const d0 = studCardAt(hand, e.seatId, 0);
-            const d1 = studCardAt(hand, e.seatId, 1);
-            const downs = [d0, d1].filter(Boolean).map(cardLabelL).join(" ");
-            if (downs) downPrefix2 = downs + " ";
-          } else if (street === "7TH") {
-            const d6 = studCardAt(hand, e.seatId, 6);
-            if (d6) downSuffix2 = " " + cardLabelL(d6);
-          }
-          const combined = `${downPrefix2}${upStr.trimEnd()}${downSuffix2}`.trim();
+          const combined = `${studDownPrefix}${upStr.trimEnd()}${studDownSuffix}`.trim();
           prefix = combined ? `${combined} ` : "";
         }
       } else if (isPreflop && isFirstForPlayer) {
