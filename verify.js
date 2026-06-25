@@ -1122,9 +1122,12 @@ check("handToText: 7-Stud 업카드 누적 + BRING-IN + Winner 7장 (studCards)"
   if (!/\[Ah\]/.test(txt)) throw new Error("3rd 업카드 누락:\n" + txt);
   if (!/\[Ah Qs\]/.test(txt)) throw new Error("4th 누적 업카드 누락:\n" + txt);
   if (/^Board:/.test(txt)) throw new Error("스터드에 Board 줄이 생김:\n" + txt);
-  // Winner 줄에 7th 다운(7c=7)까지 포함된 다운+업 표기 (A K K 2 7)
+  // 핸드가 4TH에서 끝났으므로 Winner 줄은 4TH까지 딜된 카드만 (3rd다운2+3rd업1+4th업1 = 4장)
+  // 7TH 다운(7c)은 미진행 → 포함 안 됨. 4th 업카드(2d)는 포함되어야.
   const wl = txt.split("\n").find(l => l.startsWith("Winner:"));
-  if (!/Winner: 김 .*7/.test(wl)) throw new Error("Winner 7장 표기에 7th 다운 누락:\n" + wl);
+  if (!wl) throw new Error("Winner 줄 없음:\n" + txt);
+  if (/7/.test(wl)) throw new Error("미진행 7th 다운카드가 Winner 줄에 표시됨:\n" + wl);
+  if (!/2d/.test(wl)) throw new Error("4th 업카드(2d)가 Winner 줄에 없음:\n" + wl);
 });
 
 check("스터드: bring-in 가운데 좌석 → 다음 액션자는 bring-in 다음 좌석 (순서 버그)", () => {

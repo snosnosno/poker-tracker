@@ -394,12 +394,12 @@ function handToText(hand, showEventName = true) {
 
       let prefix = "";
       if (isStudGame) {
-        // 스터드: 이름 [누적업카드]
+        // 스터드: 첫 등장=이름+다운카드+업카드, 두 번째+ 액션=업카드만(이름 생략)
         // 3RD 첫 등장: 다운카드 2장(slot 0,1)을 앞에 표시 → "이름 Ax Kx [업]"
         // 7TH 첫 등장: 7th 다운카드(slot 6)를 뒤에 표시 → "이름 [업카드누적] 7c"
-        let downPrefix = "";
-        let downSuffix = "";
         if (isFirstForPlayer) {
+          let downPrefix = "";
+          let downSuffix = "";
           if (street === "3RD") {
             const d0 = studCardAt(hand, e.seatId, 0);
             const d1 = studCardAt(hand, e.seatId, 1);
@@ -409,8 +409,11 @@ function handToText(hand, showEventName = true) {
             const d6 = studCardAt(hand, e.seatId, 6);
             if (d6) downSuffix = " " + cardLabelL(d6);
           }
+          prefix = `${e.playerName} ${downPrefix}${upStr.trimEnd()}${downSuffix} `.replace(/  +/g, " ");
+        } else {
+          // 같은 스트리트 두 번째+ 액션: 이름 없이 업카드만
+          prefix = upStr.trimEnd() ? `${upStr.trimEnd()} ` : "";
         }
-        prefix = `${e.playerName} ${downPrefix}${upStr.trimEnd()}${downSuffix} `.replace(/  +/g, " ");
       } else if (isPreflop && isFirstForPlayer) {
         prefix = `${posLabel(e.position)} ${e.playerName} `;
         prefix += handText ? `${handText} ` : "(?) ";
@@ -449,9 +452,25 @@ function handToText(hand, showEventName = true) {
   // Winner: 이름 + 최종 핸드 (드로우=마지막 스냅샷, 비드로우=딜/홀카드). 스플릿은 이름만.
   let winnerLine = `Winner: ${hand.winnerName || "—"}`;
   if (hand.winnerSeatId != null && !hand.isSplit) {
-    const wh = isStudGame
-      ? cardsToTextL(studAllCards(hand, hand.winnerSeatId))
-      : cardsToTextL(handAtStreet(hand, hand.winnerSeatId, SL.length - 1));
+    let wh;
+    if (isStudGame) {
+      // 실제 액션이 있었던 마지막 스트리트까지 딜된 카드만 포함 (미진행 스트리트 카드 제외)
+      const lastActiveIdx = SL.reduce((max, st, i) =>
+        (hand.streets[st] || []).length > 0 ? i : max, -1);
+      const dealtSlots = new Set();
+      for (let i = 0; i <= lastActiveIdx; i++) {
+        (STUD_SLOTS_BY_STREET[SL[i]] || []).forEach(s => dealtSlots.add(s));
+      }
+      const dealtCards = [];
+      for (let s = 0; s < STUD_SLOTS.length; s++) {
+        if (!dealtSlots.has(s)) continue;
+        const c = studCardAt(hand, hand.winnerSeatId, s);
+        if (c && c !== CARD_UNKNOWN) dealtCards.push(c);
+      }
+      wh = cardsToTextL(dealtCards);
+    } else {
+      wh = cardsToTextL(handAtStreet(hand, hand.winnerSeatId, SL.length - 1));
+    }
     if (wh) winnerLine += ` ${wh}`;
   }
   lines.push(winnerLine);
