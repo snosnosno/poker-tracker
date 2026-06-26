@@ -749,7 +749,11 @@ function computeNextToAct(hand, streetIdx) {
     } else {
       // 정식 베팅 전: bring-in이 기준점(있으면). 그 외엔 아직 시작 전.
       const bi = streetActions.find(a => a.action === "bringin");
-      streetActions.forEach(a => responded.add(a.seatId));
+      // bring-in 행위 자체는 responded에서 제외: 마지막에 complete 옵션을 가짐
+      streetActions.forEach(a => {
+        if (bi && a.seatId === bi.seatId && a.action === "bringin") return;
+        responded.add(a.seatId);
+      });
       pivotId = bi ? bi.seatId : null;
     }
     if (pivotId == null) {
