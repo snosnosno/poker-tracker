@@ -674,13 +674,14 @@ function computeSortedActionable(hand, streetIdx) {
   const players = computeActionablePlayers(hand, streetIdx);
   if (!hand) return players;
   const isHeadsUp = hand.seats.length === 2;
-  if (isHeadsUp) {
+  const isStudSort = !!GAME_TYPES[hand.gameType]?.stud;
+  if (isHeadsUp && !isStudSort) {
     const d = players.find(p => p.position === "D");
     const bb = players.find(p => p.position === "BB");
     if (!d || !bb) return players;
     return streetIdx === 0 ? [d, bb] : [bb, d];
   }
-  // 스터드: 포지션이 #N이라 좌석 id 순서로 정렬 (액션 순서 = 좌석 순서)
+  // 스터드(헤즈업 포함): 포지션이 #N이라 좌석 id 순서로 정렬 (액션 순서 = 좌석 순서)
   if (GAME_TYPES[hand.gameType]?.stud) {
     return [...players].sort((a, b) => a.id - b.id);
   }
@@ -724,7 +725,7 @@ function computeNextToAct(hand, streetIdx) {
   const isHeadsUp = hand.seats.length === 2;
   const isStud = !!GAME_TYPES[hand.gameType]?.stud;
 
-  if (isHeadsUp) {
+  if (isHeadsUp && !isStud) {
     for (const p of actionable) {
       if (!respondedSeatIds.has(p.id)) return p;
     }
@@ -748,7 +749,11 @@ function computeNextToAct(hand, streetIdx) {
     } else {
       // 정식 베팅 전: bring-in이 기준점(있으면). 그 외엔 아직 시작 전.
       const bi = streetActions.find(a => a.action === "bringin");
-      streetActions.forEach(a => responded.add(a.seatId));
+      // bring-in 행위 자체는 responded에서 제외: 마지막에 complete 옵션을 가짐
+      streetActions.forEach(a => {
+        if (bi && a.seatId === bi.seatId && a.action === "bringin") return;
+        responded.add(a.seatId);
+      });
       pivotId = bi ? bi.seatId : null;
     }
     if (pivotId == null) {
