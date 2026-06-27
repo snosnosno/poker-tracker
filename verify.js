@@ -1904,6 +1904,64 @@ check("헤즈업 스터드: studFirstSeat 미선택 시 기본 좌석순(id=0) �
   if (!next || next.id !== 0) throw new Error(`Alice(id=0) 기대, 실제: ${JSON.stringify(next)}`);
 });
 
+check("handToText: 프리플랍 콜 후 플랍 폴드 → 플랍 로그에 폴드 표시(전 게임)", () => {
+  installGlobals({});
+  const I = loadInternals(src);
+  const hand = {
+    gameType: "holdem",
+    streetList: ["PREFLOP", "FLOP", "TURN", "RIVER"],
+    seats: [
+      { id: 0, name: "A", position: "UTG" }, { id: 1, name: "B", position: "BB" },
+      { id: 2, name: "C", position: "D" }, { id: 3, name: "D", position: "SB" },
+    ],
+    cardCount: 2, holeCards: {}, board: ["2x", "7x", "Tx", null, null],
+    streets: {
+      PREFLOP: [
+        { seatId: 0, playerName: "A", position: "UTG", action: "call", amountText: "1K" },
+        { seatId: 1, playerName: "B", position: "BB", action: "check" },
+        { seatId: 2, playerName: "C", position: "D", action: "fold" },
+        { seatId: 3, playerName: "D", position: "SB", action: "fold" },
+      ],
+      FLOP: [
+        { seatId: 0, playerName: "A", position: "UTG", action: "fold" },
+        { seatId: 1, playerName: "B", position: "BB", action: "check" },
+      ],
+      TURN: [], RIVER: [],
+    },
+    winnerSeatId: 1, winnerName: "B",
+  };
+  const txt = I.handToText(hand, false);
+  const flopLine = txt.split("\n").find(l => l.startsWith("Flop:")) || "";
+  if (!/A\s+FOLD/i.test(flopLine)) throw new Error("프리플랍 콜한 A의 플랍 폴드가 표시 안 됨:\n" + txt);
+});
+
+check("handToText: 프리플랍 오픈폴드(이전 액션 전혀 없음)는 여전히 숨김", () => {
+  installGlobals({});
+  const I = loadInternals(src);
+  const hand = {
+    gameType: "holdem",
+    streetList: ["PREFLOP", "FLOP", "TURN", "RIVER"],
+    seats: [
+      { id: 0, name: "A", position: "UTG" }, { id: 1, name: "B", position: "BB" },
+      { id: 2, name: "C", position: "D" },
+    ],
+    cardCount: 2, holeCards: {}, board: ["2x", "7x", "Tx", null, null],
+    streets: {
+      PREFLOP: [
+        { seatId: 2, playerName: "C", position: "D", action: "fold" }, // 오픈폴드 → 숨김
+        { seatId: 0, playerName: "A", position: "UTG", action: "open", amountText: "2K" },
+        { seatId: 1, playerName: "B", position: "BB", action: "call", amountText: "2K" },
+      ],
+      FLOP: [{ seatId: 0, playerName: "A", position: "UTG", action: "check" }],
+      TURN: [], RIVER: [],
+    },
+    winnerSeatId: 0, winnerName: "A",
+  };
+  const txt = I.handToText(hand, false);
+  const preLine = txt.split("\n").find(l => l.startsWith("Pre:")) || "";
+  if (/C\s+FOLD/i.test(preLine)) throw new Error("오픈폴드한 C가 표시됨(숨김 기대):\n" + txt);
+});
+
 check("스터드 3RD: bringin+call+call → bringin 플레이어 옵션(complete 가능)", () => {
   const I = loadInternals(src);
   const hand = {

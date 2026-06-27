@@ -401,8 +401,9 @@ function handToText(hand, showEventName = true) {
   const isStudGame = !!GAME_TYPES[hand.gameType]?.stud;
   // 스터드: 핸드 전체에서 처음 등장 1회만 이름 표시 (스트릿 넘어도 유지)
   const studHandSeenSeats = new Set();
-  // 스터드: 핸드 전체에서 비폴드 액션을 한 좌석 추적 (이전 스트릿에서 액션한 사람 폴드 → 표시)
-  const studHandActedSeats = isStudGame ? new Set() : null;
+  // 모든 게임: 핸드 전체에서 비폴드 액션을 한 좌석 추적
+  // (이전 스트릿에서 이미 액션한 사람이 나중에 폴드 → 로그에 폴드 표시)
+  const handActedSeats = new Set();
 
   SL.forEach((street, sIdx) => {
     const rawEntries = hand.streets[street] || [];
@@ -414,13 +415,11 @@ function handToText(hand, showEventName = true) {
       entries = r.entries;
       showAllFold = preflopEndedByFold(hand);
     } else {
-      entries = filterFirstFolds(rawEntries, isHeadsUp, studHandActedSeats);
+      entries = filterFirstFolds(rawEntries, isHeadsUp, handActedSeats);
     }
 
-    // 스터드: 이 스트릿의 비폴드 액션을 핸드 집합에 추가 (다음 스트릿 폴드 판단에 사용)
-    if (studHandActedSeats) {
-      rawEntries.forEach(e => { if (e.action !== "fold") studHandActedSeats.add(e.seatId); });
-    }
+    // 이 스트릿의 비폴드 액션을 핸드 집합에 추가 (다음 스트릿 폴드 판단에 사용)
+    rawEntries.forEach(e => { if (e.action !== "fold") handActedSeats.add(e.seatId); });
 
     const isDrawStreet = isDrawGame && sIdx >= 1;
     const parts = [];
@@ -1143,14 +1142,15 @@ function StreetLine({ hand, streetIdx, dupCardSeats, size = "sm", showEmpty = fa
   const isHeadsUp = (hand.seats?.length || 0) === 2;
   const isStudGame = !!GAME_TYPES[hand.gameType]?.stud;
 
-  // Bug 1 fix: 스터드는 이전 스트릿에서 비폴드 액션한 좌석을 추적해 filterFirstFolds에 전달
-  const studPrevActedSeats = isStudGame ? (() => {
+  // 이전 스트릿에서 비폴드 액션한 좌석을 추적해 filterFirstFolds에 전달
+  // (이미 액션한 사람이 나중 스트릿에서 폴드 → 로그에 표시)
+  const prevActedSeats = (() => {
     const s = new Set();
     for (let i = 0; i < streetIdx; i++) {
       (hand.streets?.[SL[i]] || []).forEach(e => { if (e.action !== "fold") s.add(e.seatId); });
     }
     return s;
-  })() : null;
+  })();
 
   let entries, showAllFold = false;
   if (isPreflop) {
@@ -1158,7 +1158,7 @@ function StreetLine({ hand, streetIdx, dupCardSeats, size = "sm", showEmpty = fa
     entries = r.entries;
     showAllFold = isStudGame ? studThirdEndedByFold(hand) : preflopEndedByFold(hand);
   } else {
-    entries = filterFirstFolds(rawEntries, isHeadsUp, studPrevActedSeats);
+    entries = filterFirstFolds(rawEntries, isHeadsUp, prevActedSeats);
     if (isStudGame && streetIdx === 0) showAllFold = studThirdEndedByFold(hand);
   }
 
