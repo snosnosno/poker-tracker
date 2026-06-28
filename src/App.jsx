@@ -509,8 +509,8 @@ function computePositions(seatsInOrder, buttonSeatId) {
   const assignedCount = Object.keys(result.positions).length;
   const remaining = playing.length - assignedCount;
   if (remaining > 0) {
-    const refCount = Math.min(remaining + 3, 9);
-    const refFull = FULL_BY_COUNT[refCount] || FULL_BY_COUNT[9];
+    const refCount = Math.min(remaining + 3, 10);
+    const refFull = FULL_BY_COUNT[refCount] || FULL_BY_COUNT[10];
     const earlyAll = refFull.filter(p => p !== "D" && p !== "SB" && p !== "BB");
     const earlyPositions = earlyAll.slice(0, remaining);
     let cur = bbPos;
