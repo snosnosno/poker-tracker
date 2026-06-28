@@ -86,12 +86,12 @@ const ACTIONS = [
 ];
 
 // 9-max 포지션 순서 (액션 순서: UTG부터 시계방향)
-// PREFLOP: UTG → UTG+1 → MP → MP+1 → HJ → CO → D → SB → BB
+// PREFLOP: UTG → UTG+1 → MP → MP+1 → MP+2 → HJ → CO → D → SB → BB
 // POSTFLOP: SB → BB → UTG → ... → D (SB부터 시작)
-const POSITION_ORDER = ["UTG", "UTG+1", "MP", "MP+1", "HJ", "CO", "D", "SB", "BB"];
+const POSITION_ORDER = ["UTG", "UTG+1", "MP", "MP+1", "MP+2", "HJ", "CO", "D", "SB", "BB"];
 
 // 포스트플랍 액션 순서 = SB → BB → UTG → ... → D
-const POSTFLOP_ORDER = ["SB", "BB", "UTG", "UTG+1", "MP", "MP+1", "HJ", "CO", "D"];
+const POSTFLOP_ORDER = ["SB", "BB", "UTG", "UTG+1", "MP", "MP+1", "MP+2", "HJ", "CO", "D"];
 
 // RFID 화면 표기 매핑 (내부 코드 → RFID 화면에 보이는 라벨)
 // 내부 로직(정렬/N-BET)은 POSITION_ORDER 코드를 그대로 쓰고, 표시할 때만 변환
@@ -100,6 +100,7 @@ const POSITION_LABEL = {
   "UTG+1": "+1",
   "MP": "+2",
   "MP+1": "+3",
+  "MP+2": "+4",
   "HJ": "HJ",
   "CO": "CO",
   "D": "D",
@@ -1015,7 +1016,7 @@ function swapSeatContents(seats, idA, idB) {
 
 // 시트 초기화 (기본 포지션 미리 할당)
 const initSeats = () =>
-  Array.from({ length: 9 }, (_, i) => ({
+  Array.from({ length: 10 }, (_, i) => ({
     id: i,
     name: "",
     position: POSITION_ORDER[i],
