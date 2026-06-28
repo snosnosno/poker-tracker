@@ -536,6 +536,7 @@ const FULL_BY_COUNT = {
   7: ["UTG", "UTG+1", "HJ", "CO", "D", "SB", "BB"],
   8: ["UTG", "UTG+1", "MP", "HJ", "CO", "D", "SB", "BB"],
   9: ["UTG", "UTG+1", "MP", "MP+1", "HJ", "CO", "D", "SB", "BB"],
+  10: ["UTG", "UTG+1", "MP", "MP+1", "MP+2", "HJ", "CO", "D", "SB", "BB"],
 };
 
 // 버튼 자리 기준으로 각 참여 시트의 포지션 계산.
@@ -3168,7 +3169,7 @@ export default function PokerTracker() {
 
               {/* 시트들 */}
               {seats.map((seat, i) => {
-                const pos = getSeatPos(i);
+                const pos = getSeatPos(i, seats.length);
                 const isNextToAct = nextToActId != null && seat.id === nextToActId;
                 const lastAction = currentHand
                   ? currentHand.streets[currentStreetName]?.find(a => a.seatId === seat.id)
